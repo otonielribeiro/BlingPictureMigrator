@@ -7,9 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8080
-ENV STREAMLIT_SERVER_PORT=$PORT
+# Streamlit agora lê a porta de .streamlit/config.toml
+# Não é necessário EXPOSE ou ENV STREAMLIT_SERVER_PORT aqui, pois o healthcheck e o config.toml já cuidam.
 
 HEALTHCHECK CMD curl --fail http://localhost:$PORT || exit 1
 
-ENTRYPOINT ["streamlit", "run", "app/app.py", "--server.port", "$PORT", "--server.address", "0.0.0.0"]
+ENTRYPOINT ["streamlit", "run", "app/app.py"]
