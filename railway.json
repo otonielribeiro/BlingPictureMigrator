@@ -5,13 +5,13 @@
   "deploy": {
     "startCommand": "streamlit run app/app.py",
     "healthcheckPath": "/",
-    "healthcheckPort": 8501,
+    "healthcheckPort": 8080,
     "numReplicas": 1,
     "restartPolicy": {
       "maxRetries": 10
     },
     "template": {
-      "name": "your-app-name",
+      "name": "bling-picture-migrator",
       "isPrivate": false,
       "environment": [
         {
@@ -24,7 +24,7 @@
         },
         {
           "name": "BLING_LOJAHI_REDIRECT_URI",
-          "value": "http://localhost:8501/oauth_callback"
+          "value": "http://localhost:8080/oauth_callback" 
         },
         {
           "name": "BLING_SELECT_CLIENT_ID",
@@ -36,11 +36,15 @@
         },
         {
           "name": "BLING_SELECT_REDIRECT_URI",
-          "value": "http://localhost:8501/oauth_callback"
+          "value": "http://localhost:8080/oauth_callback" 
         },
         {
           "name": "STORAGE_PATH",
           "value": "/app/data/storage"
+        },
+        {
+          "name": "PORT",
+          "value": "8080"
         }
       ]
     }

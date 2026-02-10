@@ -7,8 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8501
+EXPOSE 8080
 
-HEALTHCHECK CMD curl --fail http://localhost:8501 || exit 1
+HEALTHCHECK CMD curl --fail http://localhost:$PORT || exit 1
 
-ENTRYPOINT ["streamlit", "run", "app/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+ENTRYPOINT ["streamlit", "run", "app/app.py", "--server.port", "$PORT", "--server.address", "0.0.0.0"]
