@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8080
+ENV STREAMLIT_SERVER_PORT=$PORT
 
 HEALTHCHECK CMD curl --fail http://localhost:$PORT || exit 1
 
