@@ -1,0 +1,55 @@
+{
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "streamlit run app/app.py",
+    "healthcheckPath": "/",
+    "healthcheckPort": 8501,
+    "numReplicas": 1,
+    "restartPolicy": {
+      "maxRetries": 10
+    },
+    "template": {
+      "name": "your-app-name",
+      "isPrivate": false,
+      "environment": [
+        {
+          "name": "BLING_LOJAHI_CLIENT_ID",
+          "value": ""
+        },
+        {
+          "name": "BLING_LOJAHI_CLIENT_SECRET",
+          "value": ""
+        },
+        {
+          "name": "BLING_LOJAHI_REDIRECT_URI",
+          "value": "http://localhost:8501/oauth_callback"
+        },
+        {
+          "name": "BLING_SELECT_CLIENT_ID",
+          "value": ""
+        },
+        {
+          "name": "BLING_SELECT_CLIENT_SECRET",
+          "value": ""
+        },
+        {
+          "name": "BLING_SELECT_REDIRECT_URI",
+          "value": "http://localhost:8501/oauth_callback"
+        },
+        {
+          "name": "STORAGE_PATH",
+          "value": "/app/data/storage"
+        }
+      ]
+    }
+  },
+  "minReplicas": 1,
+  "maxReplicas": 1,
+  "volumes": {
+    "/app/data": {
+      "size": "1GB"
+    }
+  }
+}
