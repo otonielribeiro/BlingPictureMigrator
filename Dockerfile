@@ -11,4 +11,6 @@ EXPOSE 8080
 
 HEALTHCHECK CMD curl --fail http://localhost:$PORT || exit 1
 
-ENTRYPOINT ["sh", "-c", "streamlit run app/app.py --server.port $PORT --server.address 0.0.0.0"]
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+CMD ["./entrypoint.sh"]
