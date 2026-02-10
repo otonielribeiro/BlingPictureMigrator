@@ -15,12 +15,13 @@ BLING_API_BASE_URL = "https://www.bling.com.br/Api/v3"
 # Credenciais Bling Origem (LOJAHI)
 BLING_LOJAHI_CLIENT_ID = os.getenv("BLING_LOJAHI_CLIENT_ID")
 BLING_LOJAHI_CLIENT_SECRET = os.getenv("BLING_LOJAHI_CLIENT_SECRET")
-BLING_LOJAHI_REDIRECT_URI = os.getenv("BLING_LOJAHI_REDIRECT_URI", "http://localhost:8501/oauth_callback")
+APP_URL_BASE = os.getenv("APP_URL", "http://localhost:8501")
+BLING_LOJAHI_REDIRECT_URI = f"{APP_URL_BASE}/oauth_callback"
 
 # Credenciais Bling Destino (SELECT)
 BLING_SELECT_CLIENT_ID = os.getenv("BLING_SELECT_CLIENT_ID")
 BLING_SELECT_CLIENT_SECRET = os.getenv("BLING_SELECT_CLIENT_SECRET")
-BLING_SELECT_REDIRECT_URI = os.getenv("BLING_SELECT_REDIRECT_URI", "http://localhost:8501/oauth_callback")
+BLING_SELECT_REDIRECT_URI = f"{APP_URL_BASE}/oauth_callback"
 
 # Caminho para armazenamento local
 STORAGE_PATH = os.getenv("STORAGE_PATH", "app/data/storage")
