@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime, timedelta
 import json
+import uuid # For a unique state parameter in OAuth
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -22,7 +23,6 @@ BLING_SELECT_CLIENT_ID = os.getenv("BLING_SELECT_CLIENT_ID")
 BLING_SELECT_CLIENT_SECRET = os.getenv("BLING_SELECT_CLIENT_SECRET")
 
 # Caminho para armazenamento local
-# A APP_URL será definida pelo Railway em produção, ou será localhost em dev
 APP_URL_BASE = os.getenv("APP_URL", "http://localhost:8501") # Padrão para desenvolvimento local
 
 # Redirect URIs
@@ -46,16 +46,16 @@ def log_message(message):
 
 def save_tokens(account_name, tokens):
     '''Salva os tokens OAuth em um arquivo JSON no volume persistente.'''
-    token_path = TOKEN_LOJAHI_PATH if account_name == "lojahih" else TOKEN_SELECT_PATH
+    token_path = TOKEN_LOJAHI_PATH if account_name == "lojahi" else TOKEN_SELECT_PATH
     tokens["expires_at"] = (datetime.now() + timedelta(seconds=tokens["expires_in"])).isoformat()
     with open(token_path, "w", encoding="utf-8") as f:
-        json.dump(tokens, f)
+        json.dump(tokens, f, indent=4)
     log_message(f"Tokens de {account_name} salvos em {token_path}")
 
 
 def load_tokens(account_name):
     '''Carrega os tokens OAuth de um arquivo JSON e verifica a expiração.'''
-    token_path = TOKEN_LOJAHI_PATH if account_name == "lojahih" else TOKEN_SELECT_PATH
+    token_path = TOKEN_LOJAHI_PATH if account_name == "lojahi" else TOKEN_SELECT_PATH
     if not os.path.exists(token_path):
         return None
     try:
@@ -64,14 +64,30 @@ def load_tokens(account_name):
         if "expires_at" in tokens:
             expires_at = datetime.fromisoformat(tokens["expires_at"])
             if expires_at < datetime.now():
-                log_message(f"Tokens de {account_name} expirados. Tentando refresh...")
-                # TODO: Implementar refresh token. Por enquanto, retorna None para forçar reautenticação
+                log_message(f"Tokens de {account_name} expirados. Forçando reautenticação.")
                 st.warning(f"Tokens de {account_name} expirados. Por favor, reautentique.")
+                os.remove(token_path) # Limpa o token expirado
+                st.experimental_rerun()
                 return None
         return tokens
     except json.JSONDecodeError:
-        log_message(f"Erro ao decodificar tokens de {account_name} de {token_path}")
+        log_message(f"Erro ao decodificar tokens de {account_name} de {token_path}. Arquivo corrompido ou inválido.")
+        os.remove(token_path) # Limpa o arquivo corrompido
+        st.experimental_rerun()
         return None
+    except FileNotFoundError:
+        return None
+
+
+def clear_all_tokens():
+    '''Remove todos os arquivos de token para resetar as conexões.'''
+    if os.path.exists(TOKEN_LOJAHI_PATH):
+        os.remove(TOKEN_LOJAHI_PATH)
+        log_message("Token LOJAHI removido.")
+    if os.path.exists(TOKEN_SELECT_PATH):
+        os.remove(TOKEN_SELECT_PATH)
+        log_message("Token SELECT removido.")
+    st.experimental_rerun()
 
 
 # --- Funções OAuth 2.0 ---
@@ -80,18 +96,33 @@ def get_authorization_url(client_id, redirect_uri, state):
     params = {
         "response_type": "code",
         "client_id": client_id,
-        "state": state,
+        # "state": state, # Bling API v3 docs don't explicitly mention state passing back or needing verification
         "redirect_uri": redirect_uri
     }
+    # Adicionando um estado único para cada requisição para segurança (melhora contra CSRF)
+    st.session_state[f"oauth_state_{client_id}"] = str(uuid.uuid4())
+    params["state"] = st.session_state[f"oauth_state_{client_id}"]
+
     return f"{BLING_AUTH_URL}?" + "&".join([f"{k}={v}" for k, v in params.items()])
 
 
-def get_access_token(client_id, client_secret, code, redirect_uri):
+def get_access_token(client_id, client_secret, code, redirect_uri, received_state):
     '''Troca o código de autorização por um token de acesso Bling.'''
+    # Verifica o estado para proteção CSRF
+    expected_state = st.session_state.get(f"oauth_state_{client_id}")
+    if not expected_state or expected_state != received_state:
+        raise ValueError("OAuth state mismatch! Possible CSRF attack or invalid redirect.")
+
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
     }
-    data = {"grant_type": "authorization_code", "code": code, "client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri
+    }
     response = requests.post(BLING_TOKEN_URL, headers=headers, data=data)
     response.raise_for_status()
     return response.json()
@@ -102,19 +133,23 @@ def refresh_access_token(client_id, client_secret, refresh_token):
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
     }
-    data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id, "client_secret": client_secret}
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret
+    }
     response = requests.post(BLING_TOKEN_URL, headers=headers, data=data)
     response.raise_for_status()
     return response.json()
 
 
-# --- Funções API Bling ---
+# --- Funções API Bling (Mantidas as mesmas) ---
 def get_product_images(access_token, sku):
     '''Obtém as imagens de um produto Bling pelo SKU.'''
     headers = {
         "Authorization": f"Bearer {access_token}"
     }
-    # Bling API v3: Primeiro busca o produto pelo SKU, depois suas imagens
     response_product = requests.get(f"{BLING_API_BASE_URL}/produtos?filters=sku['{sku}']", headers=headers)
     response_product.raise_for_status()
     products_data = response_product.json().get('data')
@@ -146,13 +181,12 @@ def upload_image_to_bling(access_token, product_id, image_path):
     files = {
         "file": (os.path.basename(image_path), open(image_path, 'rb'), 'image/jpeg')
     }
-    # Endpoint da API Bling v3 para anexar imagem (sujeito a ajustes)
     response = requests.post(f"{BLING_API_BASE_URL}/produtos/{product_id}/anexar-imagem", headers=headers, files=files)
     response.raise_for_status()
     return response.json()
 
 
-# --- Lógica de Migração ---
+# --- Lógica de Migração (Mantida a mesma) ---
 def migrate_sku_images(sku, access_token_origin, access_token_dest):
     '''Orquestra o download de imagens de origem e upload para o destino para um SKU.'''
     log_message(f"Iniciando migração para SKU: {sku}")
@@ -166,14 +200,13 @@ def migrate_sku_images(sku, access_token_origin, access_token_dest):
 
         if not images_data_origin:
             log_message(f"Nenhuma imagem encontrada para SKU {sku} na origem. Ignorando.")
-            # st.warning(f"Nenhuma imagem encontrada para SKU {sku} na origem.") # Evitar mensagens excessivas
             return False
 
         downloaded_images = []
         for img_data in images_data_origin:
             image_url = img_data.get('link')
             if image_url:
-                file_name = os.path.basename(image_url).split('?')[0] # Remove query params da URL
+                file_name = os.path.basename(image_url).split('?')[0]
                 local_image_path = os.path.join(sku_storage_path, file_name)
                 st.info(f"Baixando imagem {file_name} do SKU {sku}...")
                 download_image(image_url, local_image_path)
@@ -215,9 +248,7 @@ def migrate_sku_images(sku, access_token_origin, access_token_dest):
         st.error(error_message)
         log_message(error_message)
     finally:
-        # Manter arquivos localmente por enquanto para debug. Em produção, considerar limpeza.
         pass
-    
     return False
 
 
@@ -226,64 +257,90 @@ st.set_page_config(page_title="Bling Picture Migrator", layout="wide")
 st.title("Bling Picture Migrator")
 st.markdown("Ferramenta para migrar fotos de produtos entre contas Bling (Origem -> Destino).")
 st.markdown(f"URL Base da Aplicação: __`{APP_URL_BASE}`__. Certifique-se de que a `APP_URL` configurada no Railway corresponda à URL pública da sua aplicação Bling para Redirecionamentos OAuth.")
+st.markdown("---")
 
-# --- Fluxo de Autenticação Sequencial ---
-st.sidebar.header("Status da Autenticação Bling")
+# --- Lógica de redirecionamento para o Streamlit ---
+query_params = st.query_params
+auth_code = query_params.get("code")
+state_received = query_params.get("state")
+client_id_for_state = None  # To identify which client_id the state belongs to
 
-tokens_lojahih_loaded = load_tokens("lojahih")
-tokens_select_loaded = load_tokens("select")
+if auth_code:
+    if state_received == st.session_state.get(f"oauth_state_{BLING_LOJAHI_CLIENT_ID}"):
+        client_id_for_state = BLING_LOJAHI_CLIENT_ID
+        redirect_uri = BLING_LOJAHI_REDIRECT_URI
+        account_name = "lojahi"
+        client_secret = BLING_LOJAHI_CLIENT_SECRET
+    elif state_received == st.session_state.get(f"oauth_state_{BLING_SELECT_CLIENT_ID}"):
+        client_id_for_state = BLING_SELECT_CLIENT_ID
+        redirect_uri = BLING_SELECT_REDIRECT_URI
+        account_name = "select"
+        client_secret = BLING_SELECT_CLIENT_SECRET
+    
+    if client_id_for_state:
+        try:
+            tokens = get_access_token(client_id_for_state, client_secret, auth_code, redirect_uri, state_received)
+            save_tokens(account_name, tokens)
+            st.success(f"{account_name.upper()} autenticada com sucesso!")
+            st.query_params.clear()
+            st.experimental_rerun()
+        except ValueError as e:
+            st.error(f"Erro de autenticação {account_name.upper()}: {e}")
+            log_message(f"Erro de autenticação {account_name.upper()}: {e}")
+        except Exception as e:
+            st.error(f"Erro ao autenticar {account_name.upper()}: {e}")
+            log_message(f"Erro ao autenticar {account_name.upper()}: {e}")
+    else:
+        st.error("Erro: Estado OAuth recebido não corresponde a nenhuma conta Bling esperada.")
+        log_message("Erro: Estado OAuth recebido não corresponde a nenhuma conta Bling esperada.")
 
-# Definir estados atuais
-is_lojahih_authenticated = tokens_lojahih_loaded is not None
-is_select_authenticated = tokens_select_loaded is not None
+# --- Fluxo de Autenticação Sequencial Principal ---
+current_lojahi_tokens = load_tokens("lojahi")
+current_select_tokens = load_tokens("select")
 
-tokens_lojahih = tokens_lojahih_loaded
-tokens_select = tokens_select_loaded
+is_lojahi_connected = current_lojahi_tokens is not None
+is_select_connected = current_select_tokens is not None
+
+tokens_to_use_lojahi = current_lojahi_tokens['access_token'] if is_lojahi_connected else None
+tokens_to_use_select = current_select_tokens['access_token'] if is_select_connected else None
 
 
-if not is_lojahih_authenticated:
+if not is_lojahi_connected:
+    # --- FASE 1: Conexão da Origem (LOJAHI) ---
     st.header("Passo 1: Conectar Conta de Origem (LOJAHI)")
     st.info("Para iniciar, autorize o acesso à sua conta Bling de origem (LOJAHI).")
-    lojahih_auth_url = get_authorization_url(BLING_LOJAHI_CLIENT_ID, BLING_LOJAHI_REDIRECT_URI, "lojahih_state")
-    st.markdown(f"**Clique aqui para autorizar a LOJAHI:** [Autorizar LOJAHI]({lojahih_auth_url})")
+    lojahi_auth_url = get_authorization_url(BLING_LOJAHI_CLIENT_ID, BLING_LOJAHI_REDIRECT_URI, "lojahi_state")
+    st.markdown(f"**Clique aqui para autorizar a LOJAHI:** [Autorizar LOJAHI]({lojahi_auth_url})")
 
-    auth_code_lojahih = st.text_input("Cole o Código de Autorização da LOJAHI aqui:", key="code_lojahih_input")
-    if auth_code_lojahih:
-        try:
-            tokens = get_access_token(BLING_LOJAHI_CLIENT_ID, BLING_LOJAHI_CLIENT_SECRET, auth_code_lojahih, BLING_LOJAHI_REDIRECT_URI)
-            save_tokens("lojahih", tokens)
-            tokens_lojahih = tokens # Atualizar o token na sessão atual
-            st.success("LOJAHI autenticada com sucesso! Recarregue a página para continuar.")
-            log_message("LOJAHI autenticada com sucesso!")
-            st.experimental_rerun() # Recarregar a página para mostrar o próximo passo
-        except Exception as e:
-            st.error(f"Erro ao autenticar LOJAHI: {e}")
-            log_message(f"Erro ao autenticar LOJAHI: {e}")
-            
-elif is_lojahih_authenticated and not is_select_authenticated:
+    # O campo para colar o código agora é tratado pelo redirecionamento e st.query_params,
+    # Não há necessidade de um text_input aqui, pois o token é salvo automaticamente.
+    # Para testes locais, o usuário ainda pode precisar colar o código (em caso de falha de redirecionamento)
+    if APP_URL_BASE == "http://localhost:8501" and not auth_code: # Apenas para desenvolvimento/depuração local sem redirecionamento automatico
+        temp_code_input = st.text_input("Cole o código de autorização da LOJAHI (somente se o redirecionamento automático falhar):", key="temp_lojahi_code_input")
+        if temp_code_input:
+            st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway.")
+
+elif is_lojahi_connected and not is_select_connected:
+    # --- FASE 2: Conexão do Destino (SELECT) ---
     st.header("Passo 2: Conectar Conta de Destino (SELECT)")
     st.success("✅ Origem (LOJAHI) Conectada com Sucesso!")
     st.info("Agora, vamos conectar sua conta Bling de destino (SELECT).")
     
-    st.warning("⚠️ **IMPORTANTE:** Antes de clicar abaixo, certifique-se de ter feito LOGOUT TOTAL do Bling nesta aba ou abra o link abaixo em uma **JANELA ANÔNIMA** para evitar conflito de contas Bling.")
+    st.warning("⚠️ **IMPORTANTE:** O Bling mantém sessões de login no navegador. Para evitar o erro 'client_id mismatch' ao conectar a segunda conta, **É OBRIGATÓRIO** fazer o logout da conta Bling ativa, ou abrir o link de autorização abaixo em uma **JANELA ANÔNIMA** (ou de convidado).")
+    st.markdown(f"**[1. CLIQUE AQUI PRIMEIRO PARA DESLOGAR DO BLING](https://www.bling.com.br/login?logout=true)** (Isso não afeta os tokens já salvos)")
+    st.info("Após fazer o logout, retorne a esta página ou abra o link de autorização da SELECT em uma **janela anônima**.")
     
     select_auth_url = get_authorization_url(BLING_SELECT_CLIENT_ID, BLING_SELECT_REDIRECT_URI, "select_state")
     st.markdown(f"**Clique aqui para autorizar a SELECT:** [Autorizar SELECT]({select_auth_url})")
 
-    auth_code_select = st.text_input("Cole o Código de Autorização da SELECT aqui:", key="code_select_input")
-    if auth_code_select:
-        try:
-            tokens = get_access_token(BLING_SELECT_CLIENT_ID, BLING_SELECT_CLIENT_SECRET, auth_code_select, BLING_SELECT_REDIRECT_URI)
-            save_tokens("select", tokens)
-            tokens_select = tokens # Atualizar o token na sessão atual
-            st.success("SELECT autenticada com sucesso! Recarregue a página para continuar.")
-            log_message("SELECT autenticada com sucesso!")
-            st.experimental_rerun() # Recarregar a página para mostrar o próximo passo
-        except Exception as e:
-            st.error(f"Erro ao autenticar SELECT: {e}")
-            log_message(f"Erro ao autenticar SELECT: {e}")
+    if APP_URL_BASE == "http://localhost:8501" and not auth_code: # Apenas para desenvolvimento/depuração local
+        temp_code_input = st.text_input("Cole o código de autorização da SELECT (somente se o redirecionamento automático falhar):", key="temp_select_code_input")
+        if temp_code_input:
+            st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway.")
 
-elif is_lojahih_authenticated and is_select_authenticated:
+
+elif is_lojahi_connected and is_select_connected:
+    # --- FASE 3: Migração ---
     st.header("Passo 3: Iniciar Migração de Imagens")
     st.success("✅ Origem (LOJAHI) Conectada com Sucesso!")
     st.success("✅ Destino (SELECT) Conectado com Sucesso!")
@@ -301,7 +358,7 @@ elif is_lojahih_authenticated and is_select_authenticated:
             with st.spinner("Iniciando migração..."):
                 for i, sku in enumerate(skus_to_migrate):
                     status_text.text(f"Processando SKU: {sku}... ({i+1}/{total_skus})")
-                    if migrate_sku_images(sku, tokens_lojahih['access_token'], tokens_select['access_token']):
+                    if migrate_sku_images(sku, tokens_to_use_lojahi, tokens_to_use_select):
                         migrated_count += 1
                     progress_bar.progress((i + 1) / total_skus)
                 
@@ -313,33 +370,21 @@ elif is_lojahih_authenticated and is_select_authenticated:
         else:
             st.warning("Por favor, insira pelo menos um SKU para iniciar a migração.")
 
-# --- Exibir log de migração (opcional na sidebar) ---
+    st.markdown("---")
+    if st.button("Resetar Conexões (Apagar Tokens)", help="Isso removerá os tokens de acesso e forçará uma nova autenticação para ambas as contas Bling."):
+        clear_all_tokens()
+        st.success("Conexões resetadas! Reiniciando...")
+        st.experimental_rerun()
+
+
+# --- Exibir log de migração (sidebar) ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("Logs da Migração")
 if os.path.exists(LOG_FILE_PATH):
     with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
         log_content = f.read()
         st.sidebar.download_button("Download Log", log_content, file_name="migration_log.txt", mime="text/plain")
-        if st.sidebar.checkbox("Exibir Log Completo"):
+        if st.sidebar.checkbox("Exibir Log Completo", key="show_full_log"):
             st.sidebar.text_area("Log de Migração", log_content, height=300)
 else:
     st.sidebar.info("Nenhum log de migração disponível ainda.")
-
-# --- Estado atual da autenticação (sidebar) ---
-st.sidebar.markdown("---")
-st.sidebar.subheader("Estado dos Tokens (Debug)")
-if tokens_lojahih:
-    st.sidebar.write("LOJAHI: ✅ Conectada")
-    if st.sidebar.button("Limpar Token LOJAHI", key="clear_lojahi_token"):
-        os.remove(TOKEN_LOJAHI_PATH)
-        st.experimental_rerun()
-else:
-    st.sidebar.write("LOJAHI: ❌ Desconectada")
-
-if tokens_select:
-    st.sidebar.write("SELECT: ✅ Conectada")
-    if st.sidebar.button("Limpar Token SELECT", key="clear_select_token"):
-        os.remove(TOKEN_SELECT_PATH)
-        st.experimental_rerun()
-else:
-    st.sidebar.write("SELECT: ❌ Desconectada")
