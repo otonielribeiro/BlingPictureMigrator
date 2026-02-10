@@ -1,1 +1,1 @@
-requests\nstreamlit\npython-dotenv
+requests\nstreamlit\npython-dotenv\ngunicorn
