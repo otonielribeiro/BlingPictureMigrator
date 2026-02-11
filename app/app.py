@@ -4,10 +4,14 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime, timedelta
 import json
-import uuid # For a unique state parameter in OAuth
+import uuid # Mantido para referência, mas não usado diretamente para state
 
 # Carregar variáveis de ambiente
 load_dotenv()
+
+# --- Constantes de State Fixo para OAuth ---
+STATE_LOJAHI_FIXED = "state_lojahi_fixed_v1"
+STATE_SELECT_FIXED = "state_select_fixed_v1"
 
 # --- Configurações Bling e OAuth 2.0 ---
 BLING_AUTH_URL = "https://www.bling.com.br/Api/v3/oauth/authorize"
@@ -91,17 +95,20 @@ def clear_all_tokens():
 
 
 # --- Funções OAuth 2.0 ---
-def get_authorization_url(client_id, redirect_uri, state):
+def get_authorization_url(client_id, redirect_uri):
     '''Gera a URL de autorização Bling OAuth 2.0.'''
     params = {
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect_uri
     }
-    # Adicionando um estado único para cada requisição para segurança (melhora contra CSRF)
-    generated_state = str(uuid.uuid4())
-    st.session_state[f"oauth_state_{client_id}"] = generated_state
-    params["state"] = generated_state
+    # Usando state fixo
+    if client_id == BLING_LOJAHI_CLIENT_ID:
+        params["state"] = STATE_LOJAHI_FIXED
+    elif client_id == BLING_SELECT_CLIENT_ID:
+        params["state"] = STATE_SELECT_FIXED
+    else: # Fallback para client_id inesperado
+        params["state"] = "generic_state"
 
     return f"{BLING_AUTH_URL}?" + "&".join([f"{k}={v}" for k, v in params.items()])
 
@@ -109,17 +116,15 @@ def get_authorization_url(client_id, redirect_uri, state):
 def get_access_token(client_id, client_secret, code, redirect_uri, received_state):
     '''Troca o código de autorização por um token de acesso Bling.'''
     # Verifica o estado para proteção CSRF
-    expected_state = st.session_state.get(f"oauth_state_{client_id}")
-    if not expected_state or expected_state != received_state:
-        # Se for um refresh (não um novo fluxo de autorização), o estado pode não estar na sessão
-        # Para simplificar este fluxo, vamos permitir se o state não for encontrado na sessão se received_state não for None
-        # Em um sistema robusto, você precisaria de um armazenamento de estado independente da sessão Streamlit.
-        if received_state and not expected_state:
-             log_message(f"AVISO: OAuth state não encontrado na sessão para {client_id}. Pode ser um refresh ou sessão reiniciada. Continuando, mas idealmente o estado deveria persistir.")
-        # Se o estado não corresponder, trata como erro
-        elif expected_state and expected_state != received_state:
-             raise ValueError("OAuth state mismatch! Possible CSRF attack or invalid redirect.")
+    expected_state = None
+    if client_id == BLING_LOJAHI_CLIENT_ID:
+        expected_state = STATE_LOJAHI_FIXED
+    elif client_id == BLING_SELECT_CLIENT_ID:
+        expected_state = STATE_SELECT_FIXED
 
+    if expected_state and expected_state != received_state:
+        raise ValueError("OAuth state mismatch! Possible CSRF attack or invalid redirect.")
+    
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
     }
@@ -261,20 +266,14 @@ auth_code = query_params.get("code")
 state_received = query_params.get("state")
 client_id_for_state = None  # To identify which client_id the state belongs to
 
-# Garante que st.session_state exista para estados OAuth
-if f"oauth_state_{BLING_LOJAHI_CLIENT_ID}" not in st.session_state:
-    st.session_state[f"oauth_state_{BLING_LOJAHI_CLIENT_ID}"] = None
-if f"oauth_state_{BLING_SELECT_CLIENT_ID}" not in st.session_state:
-    st.session_state[f"oauth_state_{BLING_SELECT_CLIENT_ID}"] = None
-
 
 if auth_code:
-    if state_received == st.session_state.get(f"oauth_state_{BLING_LOJAHI_CLIENT_ID}"):
+    if state_received == STATE_LOJAHI_FIXED:
         client_id_for_state = BLING_LOJAHI_CLIENT_ID
         redirect_uri = BLING_LOJAHI_REDIRECT_URI
         account_name = "lojahi"
         client_secret = BLING_LOJAHI_CLIENT_SECRET
-    elif state_received == st.session_state.get(f"oauth_state_{BLING_SELECT_CLIENT_ID}"):
+    elif state_received == STATE_SELECT_FIXED:
         client_id_for_state = BLING_SELECT_CLIENT_ID
         redirect_uri = BLING_SELECT_REDIRECT_URI
         account_name = "select"
@@ -285,21 +284,20 @@ if auth_code:
             tokens = get_access_token(client_id_for_state, client_secret, auth_code, redirect_uri, state_received)
             save_tokens(account_name, tokens)
             st.success(f"{account_name.upper()} autenticada com sucesso! Redirecionando...")
-            # Limpa os parâmetros da query e recarrega para evitar reprocessamento ou compartilhar URL sensível
             st.query_params.clear() 
             st.experimental_rerun()
         except ValueError as e:
             st.error(f"Erro de autenticação {account_name.upper()}: {e}")
             log_message(f"Erro de autenticação {account_name.upper()}: {e}")
-            st.query_params.clear() # Limpa para permitir nova tentativa
+            st.query_params.clear()
         except Exception as e:
             st.error(f"Erro ao autenticar {account_name.upper()}: {e}")
             log_message(f"Erro ao autenticar {account_name.upper()}: {e}")
-            st.query_params.clear() # Limpa para permitir nova tentativa
+            st.query_params.clear()
     else:
         st.error("Erro: Estado OAuth recebido não corresponde a nenhuma conta Bling esperada. Possível CSRF ou token inválido.")
         log_message("Erro: Estado OAuth recebido não corresponde a nenhuma conta Bling esperada.")
-        st.query_params.clear() # Limpa para não persistir o erro na URL
+        st.query_params.clear()
 
 # --- Fluxo de Autenticação Sequencial Principal ---
 current_lojahi_tokens = load_tokens("lojahi")
@@ -322,7 +320,7 @@ if not is_lojahi_connected:
     logout_confirmed_lojahi = st.checkbox("Confirmo que estou deslogado ou na conta correta (LOJAHI).", key="logout_confirm_checkbox_lojahi")
 
     if logout_confirmed_lojahi:
-        lojahi_auth_url = get_authorization_url(BLING_LOJAHI_CLIENT_ID, BLING_LOJAHI_REDIRECT_URI, "lojahi_state")
+        lojahi_auth_url = get_authorization_url(BLING_LOJAHI_CLIENT_ID, BLING_LOJAHI_REDIRECT_URI)
         st.markdown(f"**1. Clique aqui para autorizar a LOJAHI:** [Autorizar LOJAHI]({lojahi_auth_url})")
 
         # Para testes locais, o usuário ainda pode precisar colar o código (em caso de falha de redirecionamento)
@@ -345,7 +343,7 @@ elif is_lojahi_connected and not is_select_connected:
     logout_confirmed_select = st.checkbox("Confirmo que já fiz logout e estou pronto para logar na conta de Destino (SELECT).", key="logout_confirm_checkbox_select")
     
     if logout_confirmed_select:
-        select_auth_url = get_authorization_url(BLING_SELECT_CLIENT_ID, BLING_SELECT_REDIRECT_URI, "select_state")
+        select_auth_url = get_authorization_url(BLING_SELECT_CLIENT_ID, BLING_SELECT_REDIRECT_URI)
         st.markdown(f"**2. Clique aqui para autorizar a SELECT:** [Autorizar SELECT]({select_auth_url})")
 
         # Para testes locais, o usuário ainda pode precisar colar o código (em caso de falha de redirecionamento)
@@ -406,4 +404,3 @@ if os.path.exists(LOG_FILE_PATH):
             st.sidebar.text_area("Log de Migração", log_content, height=300)
 else:
     st.sidebar.info("Nenhum log de migração disponível ainda.")
-# Adicionado para gerar um novo ID de commit\n
