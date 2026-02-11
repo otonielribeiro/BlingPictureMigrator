@@ -99,11 +99,6 @@ def get_authorization_url(client_id, redirect_uri, state):
         "redirect_uri": redirect_uri
     }
     # Adicionando um estado único para cada requisição para segurança (melhora contra CSRF)
-    # st.session_state is not persistent across reruns/sessions in a deployed context like Railway if not explicitly managed.
-    # For now, let's simplify state handling given the logout barrier.
-    # A true solution might involve a persistent session store or careful handling of query params.
-    # For this simplified wizard flow, we will rely on the app's sequential nature.
-    # However, for Bling to pass 'state' back, we do need to include it in the initial request.
     generated_state = str(uuid.uuid4())
     st.session_state[f"oauth_state_{client_id}"] = generated_state
     params["state"] = generated_state
@@ -320,29 +315,36 @@ tokens_to_use_select = current_select_tokens['access_token'] if is_select_connec
 if not is_lojahi_connected:
     # --- FASE 1: Conexão da Origem (LOJAHI) ---
     st.header("Passo 1: Conectar Conta de Origem (LOJAHI)")
-    st.info("Para iniciar, autorize o acesso à sua conta Bling de origem (LOJAHI).")
-    lojahi_auth_url = get_authorization_url(BLING_LOJAHI_CLIENT_ID, BLING_LOJAHI_REDIRECT_URI, "lojahi_state")
-    st.markdown(f"**Clique aqui para autorizar a LOJAHI:** [Autorizar LOJAHI]({lojahi_auth_url})")
+    st.warning("⚠️ **ATENÇÃO:** Para iniciar a autenticação da conta de origem (LOJAHI) e evitar conflitos, **certifique-se de estar deslogado do Bling** ou logado na conta correta (LOJAHI) no seu navegador.")
+    st.markdown(f"**[🔴 CLIQUE AQUI PARA LIMPAR SESSÃO ANTERIOR](https://www.bling.com.br/login?logout=true)** (Sugestão: Abra em uma **nova aba** com Ctrl/Cmd + clique ou botão direito)")
+    st.info("Após deslogar, ou se já estiver na conta LOJAHI, marque a caixa abaixo para prosseguir com a autorização.")
 
-    # Para testes locais, o usuário ainda pode precisar colar o código (em caso de falha de redirecionamento)
-    if APP_URL_BASE == "http://localhost:8080" and not auth_code:
-        temp_code_input = st.text_input("Cole o código de autorização da LOJAHI (somente para depuração local):", key="temp_lojahi_code_input")
-        if temp_code_input:
-            st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway. Recarregue após colar.")
+    logout_confirmed_lojahi = st.checkbox("Confirmo que estou deslogado ou na conta correta (LOJAHI).", key="logout_confirm_checkbox_lojahi")
+
+    if logout_confirmed_lojahi:
+        lojahi_auth_url = get_authorization_url(BLING_LOJAHI_CLIENT_ID, BLING_LOJAHI_REDIRECT_URI, "lojahi_state")
+        st.markdown(f"**1. Clique aqui para autorizar a LOJAHI:** [Autorizar LOJAHI]({lojahi_auth_url})")
+
+        # Para testes locais, o usuário ainda pode precisar colar o código (em caso de falha de redirecionamento)
+        if APP_URL_BASE == "http://localhost:8080" and not auth_code:
+            temp_code_input = st.text_input("Cole o código de autorização da LOJAHI (somente para depuração local):", key="temp_lojahi_code_input")
+            if temp_code_input:
+                st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway. Recarregue após colar.")
+    else:
+        st.info("Marque a caixa acima para prosseguir com a conexão da conta de origem.")
 
 elif is_lojahi_connected and not is_select_connected:
     # --- FASE 2: Conexão do Destino (SELECT) ---
     st.header("Passo 2: Conectar Conta de Destino (SELECT)")
     st.success("✅ Origem (LOJAHI) Conectada com Sucesso!")
-    st.info("Agora, vamos conectar sua conta Bling de destino (SELECT).")
     
-    st.warning("⚠️ **ATENÇÃO:** O Bling mantém sessões de login no navegador. Para evitar o erro 'client_id mismatch' ao conectar a segunda conta, **É FUNDAMENTAL** fazer o logout da conta Bling ativa. Por favor, clique no link abaixo para deslogar do Bling.")
-    st.markdown(f"**[CLIQUE AQUI PRIMEIRO PARA DESLOGAR DO BLING](https://www.bling.com.br/login?logout=true)** (Sugestão: Abra em uma **nova aba** com Ctrl/Cmd + clique ou botão direito)")
-    st.info("Após deslogar *completamente*, retorne a esta página e marque a caixa abaixo para prosseguir com a autorização da conta SELECT.")
+    st.warning("⚠️ **ATENÇÃO:** Para conectar a conta de destino (SELECT) e evitar o erro 'client_id mismatch', **É OBRIGATÓRIO** fazer o logout da conta Bling ativa, **OU** logar na conta SELECT no seu navegador. Recomenda-se usar uma **JANELA ANÔNIMA**.")
+    st.markdown(f"**[🔴 CLIQUE AQUI PARA LIMPAR SESSÃO ANTERIOR](https://www.bling.com.br/login?logout=true)** (Sugestão: Abra em uma **nova aba** com Ctrl/Cmd + clique ou botão direito)")
+    st.info("Após deslogar, ou se já estiver na conta SELECT, retorne a esta página e marque a caixa abaixo para prosseguir com a autorização.")
 
-    logout_confirmed = st.checkbox("Já cliquei no link acima e confirmo que **NÃO ESTOU MAIS LOGADO** no Bling nesta aba.", key="logout_confirm_checkbox")
+    logout_confirmed_select = st.checkbox("Confirmo que já fiz logout e estou pronto para logar na conta de Destino (SELECT).", key="logout_confirm_checkbox_select")
     
-    if logout_confirmed:
+    if logout_confirmed_select:
         select_auth_url = get_authorization_url(BLING_SELECT_CLIENT_ID, BLING_SELECT_REDIRECT_URI, "select_state")
         st.markdown(f"**2. Clique aqui para autorizar a SELECT:** [Autorizar SELECT]({select_auth_url})")
 
@@ -350,7 +352,7 @@ elif is_lojahi_connected and not is_select_connected:
         if APP_URL_BASE == "http://localhost:8080" and not auth_code:
             temp_code_input = st.text_input("Cole o código de autorização da SELECT (somente para depuração local):", key="temp_select_code_input")
             if temp_code_input:
-                st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway.")
+                st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway. Recarregue após colar.")
     else:
         st.info("Marque a caixa acima para prosseguir com a conexão da conta de destino.")
 
@@ -404,3 +406,4 @@ if os.path.exists(LOG_FILE_PATH):
             st.sidebar.text_area("Log de Migração", log_content, height=300)
 else:
     st.sidebar.info("Nenhum log de migração disponível ainda.")
+# Adicionado para gerar um novo ID de commit\n
