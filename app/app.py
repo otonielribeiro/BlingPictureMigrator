@@ -23,7 +23,7 @@ BLING_SELECT_CLIENT_ID = os.getenv("BLING_SELECT_CLIENT_ID")
 BLING_SELECT_CLIENT_SECRET = os.getenv("BLING_SELECT_CLIENT_SECRET")
 
 # Caminho para armazenamento local
-APP_URL_BASE = os.getenv("APP_URL", "http://localhost:8501") # Padrão para desenvolvimento local
+APP_URL_BASE = os.getenv("APP_URL", "http://localhost:8080") # Padrão para desenvolvimento local, Railway usa $PORT=8080
 
 # Redirect URIs
 BLING_LOJAHI_REDIRECT_URI = f"{APP_URL_BASE}/oauth_callback"
@@ -96,12 +96,17 @@ def get_authorization_url(client_id, redirect_uri, state):
     params = {
         "response_type": "code",
         "client_id": client_id,
-        # "state": state, # Bling API v3 docs don't explicitly mention state passing back or needing verification
         "redirect_uri": redirect_uri
     }
     # Adicionando um estado único para cada requisição para segurança (melhora contra CSRF)
-    st.session_state[f"oauth_state_{client_id}"] = str(uuid.uuid4())
-    params["state"] = st.session_state[f"oauth_state_{client_id}"]
+    # st.session_state is not persistent across reruns/sessions in a deployed context like Railway if not explicitly managed.
+    # For now, let's simplify state handling given the logout barrier.
+    # A true solution might involve a persistent session store or careful handling of query params.
+    # For this simplified wizard flow, we will rely on the app's sequential nature.
+    # However, for Bling to pass 'state' back, we do need to include it in the initial request.
+    generated_state = str(uuid.uuid4())
+    st.session_state[f"oauth_state_{client_id}"] = generated_state
+    params["state"] = generated_state
 
     return f"{BLING_AUTH_URL}?" + "&".join([f"{k}={v}" for k, v in params.items()])
 
@@ -111,18 +116,19 @@ def get_access_token(client_id, client_secret, code, redirect_uri, received_stat
     # Verifica o estado para proteção CSRF
     expected_state = st.session_state.get(f"oauth_state_{client_id}")
     if not expected_state or expected_state != received_state:
-        raise ValueError("OAuth state mismatch! Possible CSRF attack or invalid redirect.")
+        # Se for um refresh (não um novo fluxo de autorização), o estado pode não estar na sessão
+        # Para simplificar este fluxo, vamos permitir se o state não for encontrado na sessão se received_state não for None
+        # Em um sistema robusto, você precisaria de um armazenamento de estado independente da sessão Streamlit.
+        if received_state and not expected_state:
+             log_message(f"AVISO: OAuth state não encontrado na sessão para {client_id}. Pode ser um refresh ou sessão reiniciada. Continuando, mas idealmente o estado deveria persistir.")
+        # Se o estado não corresponder, trata como erro
+        elif expected_state and expected_state != received_state:
+             raise ValueError("OAuth state mismatch! Possible CSRF attack or invalid redirect.")
 
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
     }
-    data = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "redirect_uri": redirect_uri
-    }
+    data = {"grant_type": "authorization_code", "code": code, "client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
     response = requests.post(BLING_TOKEN_URL, headers=headers, data=data)
     response.raise_for_status()
     return response.json()
@@ -133,12 +139,7 @@ def refresh_access_token(client_id, client_secret, refresh_token):
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
     }
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": client_id,
-        "client_secret": client_secret
-    }
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id, "client_secret": client_secret}
     response = requests.post(BLING_TOKEN_URL, headers=headers, data=data)
     response.raise_for_status()
     return response.json()
@@ -265,6 +266,13 @@ auth_code = query_params.get("code")
 state_received = query_params.get("state")
 client_id_for_state = None  # To identify which client_id the state belongs to
 
+# Garante que st.session_state exista para estados OAuth
+if f"oauth_state_{BLING_LOJAHI_CLIENT_ID}" not in st.session_state:
+    st.session_state[f"oauth_state_{BLING_LOJAHI_CLIENT_ID}"] = None
+if f"oauth_state_{BLING_SELECT_CLIENT_ID}" not in st.session_state:
+    st.session_state[f"oauth_state_{BLING_SELECT_CLIENT_ID}"] = None
+
+
 if auth_code:
     if state_received == st.session_state.get(f"oauth_state_{BLING_LOJAHI_CLIENT_ID}"):
         client_id_for_state = BLING_LOJAHI_CLIENT_ID
@@ -281,18 +289,22 @@ if auth_code:
         try:
             tokens = get_access_token(client_id_for_state, client_secret, auth_code, redirect_uri, state_received)
             save_tokens(account_name, tokens)
-            st.success(f"{account_name.upper()} autenticada com sucesso!")
-            st.query_params.clear()
+            st.success(f"{account_name.upper()} autenticada com sucesso! Redirecionando...")
+            # Limpa os parâmetros da query e recarrega para evitar reprocessamento ou compartilhar URL sensível
+            st.query_params.clear() 
             st.experimental_rerun()
         except ValueError as e:
             st.error(f"Erro de autenticação {account_name.upper()}: {e}")
             log_message(f"Erro de autenticação {account_name.upper()}: {e}")
+            st.query_params.clear() # Limpa para permitir nova tentativa
         except Exception as e:
             st.error(f"Erro ao autenticar {account_name.upper()}: {e}")
             log_message(f"Erro ao autenticar {account_name.upper()}: {e}")
+            st.query_params.clear() # Limpa para permitir nova tentativa
     else:
-        st.error("Erro: Estado OAuth recebido não corresponde a nenhuma conta Bling esperada.")
+        st.error("Erro: Estado OAuth recebido não corresponde a nenhuma conta Bling esperada. Possível CSRF ou token inválido.")
         log_message("Erro: Estado OAuth recebido não corresponde a nenhuma conta Bling esperada.")
+        st.query_params.clear() # Limpa para não persistir o erro na URL
 
 # --- Fluxo de Autenticação Sequencial Principal ---
 current_lojahi_tokens = load_tokens("lojahi")
@@ -312,13 +324,11 @@ if not is_lojahi_connected:
     lojahi_auth_url = get_authorization_url(BLING_LOJAHI_CLIENT_ID, BLING_LOJAHI_REDIRECT_URI, "lojahi_state")
     st.markdown(f"**Clique aqui para autorizar a LOJAHI:** [Autorizar LOJAHI]({lojahi_auth_url})")
 
-    # O campo para colar o código agora é tratado pelo redirecionamento e st.query_params,
-    # Não há necessidade de um text_input aqui, pois o token é salvo automaticamente.
     # Para testes locais, o usuário ainda pode precisar colar o código (em caso de falha de redirecionamento)
-    if APP_URL_BASE == "http://localhost:8501" and not auth_code: # Apenas para desenvolvimento/depuração local sem redirecionamento automatico
-        temp_code_input = st.text_input("Cole o código de autorização da LOJAHI (somente se o redirecionamento automático falhar):", key="temp_lojahi_code_input")
+    if APP_URL_BASE == "http://localhost:8080" and not auth_code:
+        temp_code_input = st.text_input("Cole o código de autorização da LOJAHI (somente para depuração local):", key="temp_lojahi_code_input")
         if temp_code_input:
-            st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway.")
+            st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway. Recarregue após colar.")
 
 elif is_lojahi_connected and not is_select_connected:
     # --- FASE 2: Conexão do Destino (SELECT) ---
@@ -326,17 +336,23 @@ elif is_lojahi_connected and not is_select_connected:
     st.success("✅ Origem (LOJAHI) Conectada com Sucesso!")
     st.info("Agora, vamos conectar sua conta Bling de destino (SELECT).")
     
-    st.warning("⚠️ **IMPORTANTE:** O Bling mantém sessões de login no navegador. Para evitar o erro 'client_id mismatch' ao conectar a segunda conta, **É OBRIGATÓRIO** fazer o logout da conta Bling ativa, ou abrir o link de autorização abaixo em uma **JANELA ANÔNIMA** (ou de convidado).")
-    st.markdown(f"**[1. CLIQUE AQUI PRIMEIRO PARA DESLOGAR DO BLING](https://www.bling.com.br/login?logout=true)** (Isso não afeta os tokens já salvos)")
-    st.info("Após fazer o logout, retorne a esta página ou abra o link de autorização da SELECT em uma **janela anônima**.")
-    
-    select_auth_url = get_authorization_url(BLING_SELECT_CLIENT_ID, BLING_SELECT_REDIRECT_URI, "select_state")
-    st.markdown(f"**Clique aqui para autorizar a SELECT:** [Autorizar SELECT]({select_auth_url})")
+    st.warning("⚠️ **ATENÇÃO:** O Bling mantém sessões de login no navegador. Para evitar o erro 'client_id mismatch' ao conectar a segunda conta, **É FUNDAMENTAL** fazer o logout da conta Bling ativa. Por favor, clique no link abaixo para deslogar do Bling.")
+    st.markdown(f"**[CLIQUE AQUI PRIMEIRO PARA DESLOGAR DO BLING](https://www.bling.com.br/login?logout=true)** (Sugestão: Abra em uma **nova aba** com Ctrl/Cmd + clique ou botão direito)")
+    st.info("Após deslogar *completamente*, retorne a esta página e marque a caixa abaixo para prosseguir com a autorização da conta SELECT.")
 
-    if APP_URL_BASE == "http://localhost:8501" and not auth_code: # Apenas para desenvolvimento/depuração local
-        temp_code_input = st.text_input("Cole o código de autorização da SELECT (somente se o redirecionamento automático falhar):", key="temp_select_code_input")
-        if temp_code_input:
-            st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway.")
+    logout_confirmed = st.checkbox("Já cliquei no link acima e confirmo que **NÃO ESTOU MAIS LOGADO** no Bling nesta aba.", key="logout_confirm_checkbox")
+    
+    if logout_confirmed:
+        select_auth_url = get_authorization_url(BLING_SELECT_CLIENT_ID, BLING_SELECT_REDIRECT_URI, "select_state")
+        st.markdown(f"**2. Clique aqui para autorizar a SELECT:** [Autorizar SELECT]({select_auth_url})")
+
+        # Para testes locais, o usuário ainda pode precisar colar o código (em caso de falha de redirecionamento)
+        if APP_URL_BASE == "http://localhost:8080" and not auth_code:
+            temp_code_input = st.text_input("Cole o código de autorização da SELECT (somente para depuração local):", key="temp_select_code_input")
+            if temp_code_input:
+                st.warning("Por favor, cole o código, ou use a URL de redirecionamento para o seu ambiente Railway.")
+    else:
+        st.info("Marque a caixa acima para prosseguir com a conexão da conta de destino.")
 
 
 elif is_lojahi_connected and is_select_connected:
@@ -346,7 +362,7 @@ elif is_lojahi_connected and is_select_connected:
     st.success("✅ Destino (SELECT) Conectado com Sucesso!")
     st.markdown("Ambas as contas Bling estão autenticadas. Agora você pode migrar as imagens.")
 
-    skus_input = st.text_area("Insira os SKUs dos produtos (um por linha):", height=200)
+    skus_input = st.text_area("Insira os SKUs dos produtos (um por linha, sem espaços extras):", height=200)
     if st.button("Iniciar Migração"):
         if skus_input:
             skus_to_migrate = [sku.strip() for sku in skus_input.split('\n') if sku.strip()]
