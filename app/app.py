@@ -130,7 +130,11 @@ def get_access_token(client_id, client_secret, code, redirect_uri, received_stat
     }
     data = {"grant_type": "authorization_code", "code": code, "client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
     response = requests.post(BLING_TOKEN_URL, headers=headers, data=data)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        log_message(f"DEBUG: Erro HTTP detalhado do Bling: {e.response.status_code} - {e.text}")
+        raise # Re-lança o erro para Streamlit exibir
     return response.json()
 
 
@@ -289,6 +293,11 @@ if auth_code:
         except ValueError as e:
             st.error(f"Erro de autenticação {account_name.upper()}: {e}")
             log_message(f"Erro de autenticação {account_name.upper()}: {e}")
+            st.query_params.clear()
+        except requests.exceptions.HTTPError as e: # Captura HTTPError especificamente para log detalhado
+            error_details = e.response.text if e.response is not None else "N/A"
+            st.error(f"Erro ao autenticar {account_name.upper()}: {e.response.status_code} - {error_details}")
+            log_message(f"Erro ao autenticar {account_name.upper()}: {e.response.status_code} - {error_details}")
             st.query_params.clear()
         except Exception as e:
             st.error(f"Erro ao autenticar {account_name.upper()}: {e}")
