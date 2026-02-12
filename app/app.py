@@ -72,13 +72,13 @@ def load_tokens(account_name):
                 log_message(f"Tokens de {account_name} expirados. Forçando reautenticação.")
                 st.warning(f"Tokens de {account_name} expirados. Por favor, reautentique.")
                 os.remove(token_path) # Limpa o token expirado
-                st.experimental_rerun()
+                st.rerun()
                 return None
         return tokens
     except json.JSONDecodeError:
         log_message(f"Erro ao decodificar tokens de {account_name} de {token_path}. Arquivo corrompido ou inválido.")
         os.remove(token_path) # Limpa o arquivo corrompido
-        st.experimental_rerun()
+        st.rerun()
         return None
     except FileNotFoundError:
         return None
@@ -92,7 +92,7 @@ def clear_all_tokens():
     if os.path.exists(TOKEN_SELECT_PATH):
         os.remove(TOKEN_SELECT_PATH)
         log_message("Token SELECT removido.")
-    st.experimental_rerun()
+    st.rerun()
 
 
 # --- Funções OAuth 2.0 ---
@@ -309,7 +309,7 @@ if auth_code:
             save_tokens(account_name, tokens)
             st.success(f"{account_name.upper()} autenticada com sucesso! Redirecionando...")
             st.query_params.clear() 
-            st.experimental_rerun()
+            st.rerun()
         except ValueError as e:
             st.error(f"Erro de autenticação {account_name.upper()}: {e}")
             log_message(f"Erro de autenticação {account_name.upper()}: {e}")
@@ -419,7 +419,7 @@ elif is_lojahi_connected and is_select_connected:
     if st.button("Resetar Conexões (Apagar Tokens)", help="Isso removerá os tokens de acesso e forçará uma nova autenticação para ambas as contas Bling."):
         clear_all_tokens()
         st.success("Conexões resetadas! Reiniciando...")
-        st.experimental_rerun()
+        st.rerun()
 
 
 # --- Exibir log de migração (sidebar) ---
