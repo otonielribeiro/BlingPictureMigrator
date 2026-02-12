@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta
 import json
 import uuid # Mantido para referência, mas não usado diretamente para state
+import base64 # Importado para codificação Base64
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -125,10 +126,20 @@ def get_access_token(client_id, client_secret, code, redirect_uri, received_stat
     if expected_state and expected_state != received_state:
         raise ValueError("OAuth state mismatch! Possible CSRF attack or invalid redirect.")
     
+    # Prepara as credenciais para Basic Auth
+    client_auth_string = f"{client_id}:{client_secret}"
+    encoded_client_auth = base64.b64encode(client_auth_string.encode("utf-8")).decode("utf-8")
+
     headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f"Basic {encoded_client_auth}" # Adiciona o cabeçalho Basic Auth
     }
-    data = {"grant_type": "authorization_code", "code": code, "client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri
+        # client_id e client_secret removidos do corpo, pois estão no cabeçalho Authorization
+    }
     response = requests.post(BLING_TOKEN_URL, headers=headers, data=data)
     try:
         response.raise_for_status()
@@ -140,10 +151,19 @@ def get_access_token(client_id, client_secret, code, redirect_uri, received_stat
 
 def refresh_access_token(client_id, client_secret, refresh_token):
     '''Usa o refresh token para obter um novo token de acesso Bling.'''
+    # Prepara as credenciais para Basic Auth
+    client_auth_string = f"{client_id}:{client_secret}"
+    encoded_client_auth = base64.b64encode(client_auth_string.encode("utf-8")).decode("utf-8")
+
     headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f"Basic {encoded_client_auth}" # Adiciona o cabeçalho Basic Auth
     }
-    data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id, "client_secret": client_secret}
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token
+        # client_id e client_secret removidos do corpo, pois estão no cabeçalho Authorization
+    }
     response = requests.post(BLING_TOKEN_URL, headers=headers, data=data)
     response.raise_for_status()
     return response.json()
