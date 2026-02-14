@@ -173,90 +173,150 @@ def refresh_access_token(client_id, client_secret, refresh_token):
 # --- Funções API Bling (Mantidas as mesmas) ---
 def get_product_images(access_token, sku):
     """
-    Busca imagens na ficha do produto, aceitando tanto objetos quanto strings (URLs diretas).
+    Busca TODAS as imagens de um produto (pai + variações) na API do Bling v3.
+    
+    Estrutura da API:
+    - midia é um OBJETO (não array)
+    - midia.imagens.internas[] contém as imagens principais
+    - midia.imagens.externas[] contém imagens externas
+    - Variações têm suas próprias imagens e precisam de chamadas separadas
+    
+    Args:
+        access_token: Token OAuth da conta Bling
+        sku: Código SKU do produto
+    
+    Returns:
+        Lista de dicts com campo 'link' contendo URLs únicas de imagens
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json"
     }
     
-    log_message(f"🔍 [v3] Investigando SKU: {sku}...")
+    log_message(f"🔍 [EXTRAÇÃO] Iniciando busca de imagens para SKU: {sku}")
+    
+    # PASSO 1: Buscar produto por SKU
     url_search = f"{BLING_API_BASE_URL}/produtos?codigo={sku}"
+    log_message(f"📡 [API] GET {url_search}")
     
     try:
-        # 1. Busca ID pelo SKU
         resp_search = requests.get(url_search, headers=headers)
-        data_search = resp_search.json().get('data', [])
+        resp_search.raise_for_status()
+        search_data = resp_search.json()
         
-        if not data_search:
-            log_message(f"❌ SKU {sku} não existe na conta.")
+        if not search_data.get('data'):
+            log_message(f"❌ [ERRO] Nenhum produto encontrado com SKU {sku}")
             return []
-            
-        product_id = data_search[0]['id']
-        log_message(f"📍 ID Localizado: {product_id}. Baixando ficha completa...")
         
-        # 2. Busca a FICHA COMPLETA
-        url_details = f"{BLING_API_BASE_URL}/produtos/{product_id}"
-        resp_det = requests.get(url_details, headers=headers)
-        resp_det.raise_for_status()
+        product_id = search_data['data'][0]['id']
+        log_message(f"✅ [BUSCA] Produto encontrado - ID: {product_id}")
         
-        product_full_data = resp_det.json().get('data', {})
-        found_images = []
-
-        # --- ESTRATÉGIA 1: Campo 'midia' (Híbrido: String ou Dict) ---
-        midias = product_full_data.get('midia', [])
-        if midias:
-            log_message(f"📂 Encontrado campo 'midia' com {len(midias)} itens.")
-            for m in midias:
-                if isinstance(m, str):
-                    # Se for string direta, adiciona
-                    found_images.append(m)
-                elif isinstance(m, dict):
-                    # Se for objeto, busca a chave url ou link
-                    url = m.get('url') or m.get('link') or m.get('url_miniatura')
-                    if url: found_images.append(url)
-
-        # --- ESTRATÉGIA 2: Campo 'imagens' (Legado) ---
-        if not found_images:
-            imagens_inline = product_full_data.get('imagens', [])
-            if imagens_inline:
-                log_message(f"📂 Encontrado campo 'imagens' interno.")
-                for img in imagens_inline:
-                    if isinstance(img, str): 
-                        found_images.append(img)
-                    elif isinstance(img, dict):
-                        url = img.get('link') or img.get('url')
-                        if url: found_images.append(url)
-
-        # --- ESTRATÉGIA 3: Variações (Recursivo Simples) ---
-        if not found_images and 'variacoes' in product_full_data:
-            variacoes = product_full_data.get('variacoes', [])
-            if variacoes:
-                first_child_id = variacoes[0]['id']
-                log_message(f"⬇️ Pai sem fotos. Buscando no 1º Filho (ID: {first_child_id})...")
-                
-                resp_child = requests.get(f"{BLING_API_BASE_URL}/produtos/{first_child_id}", headers=headers)
-                if resp_child.status_code == 200:
-                    child_data = resp_child.json().get('data', {})
-                    midias_child = child_data.get('midia', [])
-                    for m in midias_child:
-                        if isinstance(m, str): found_images.append(m)
-                        elif isinstance(m, dict) and m.get('url'): found_images.append(m.get('url'))
-
-        # --- FINALIZAÇÃO ---
-        if found_images:
-            # Limpa duplicatas e retorna objetos
-            unique_urls = sorted(list(set(found_images)))
-            log_message(f"📸 SUCESSO! {len(unique_urls)} URLs extraídas.")
-            return [{'link': url} for url in unique_urls]
-        else:
-            log_message(f"❌ Nenhuma URL encontrada na ficha do produto {product_id}.")
-            return []
-            
-    except Exception as e:
-        # Este é o bloco que estava faltando e causou o erro de sintaxe
-        log_message(f"Erro crítico ao ler ficha do SKU {sku}: {str(e)}")
+    except requests.exceptions.RequestException as e:
+        log_message(f"❌ [ERRO] Falha ao buscar SKU {sku}: {str(e)}")
         return []
+    
+    # PASSO 2: Obter ficha completa do produto
+    url_detail = f"{BLING_API_BASE_URL}/produtos/{product_id}"
+    log_message(f"📡 [API] GET {url_detail}")
+    
+    try:
+        resp_detail = requests.get(url_detail, headers=headers)
+        resp_detail.raise_for_status()
+        product_data = resp_detail.json().get('data', {})
+        
+        log_message(f"✅ [FICHA] Ficha completa obtida para produto ID {product_id}")
+        
+    except requests.exceptions.RequestException as e:
+        log_message(f"❌ [ERRO] Falha ao obter ficha do produto {product_id}: {str(e)}")
+        return []
+    
+    # PASSO 3: Extrair imagens do produto PAI
+    found_images = []
+    
+    midia = product_data.get('midia', {})
+    log_message(f"🔍 [ANÁLISE] Tipo do campo 'midia': {type(midia).__name__}")
+    
+    if isinstance(midia, dict):
+        imagens_obj = midia.get('imagens', {})
+        
+        # Imagens internas
+        internas = imagens_obj.get('internas', [])
+        log_message(f"📸 [PAI] Imagens internas encontradas: {len(internas)}")
+        for img in internas:
+            if isinstance(img, dict) and 'link' in img:
+                found_images.append(img['link'])
+                log_message(f"   ✓ Imagem interna adicionada: {img['link'][:80]}...")
+        
+        # Imagens externas
+        externas = imagens_obj.get('externas', [])
+        log_message(f"📸 [PAI] Imagens externas encontradas: {len(externas)}")
+        for img in externas:
+            if isinstance(img, dict) and 'link' in img:
+                found_images.append(img['link'])
+                log_message(f"   ✓ Imagem externa adicionada: {img['link'][:80]}...")
+    else:
+        log_message(f"⚠️ [AVISO] Campo 'midia' não é um objeto dict. Tipo: {type(midia)}")
+    
+    log_message(f"📊 [PAI] Total de imagens do produto pai: {len(found_images)}")
+    
+    # PASSO 4: Extrair imagens de TODAS as variações
+    variacoes = product_data.get('variacoes', [])
+    total_variacoes = len(variacoes)
+    
+    if total_variacoes > 0:
+        log_message(f"🔄 [VARIAÇÕES] Produto tem {total_variacoes} variações. Buscando imagens...")
+        
+        for idx, variacao in enumerate(variacoes, 1):
+            variacao_id = variacao.get('id')
+            variacao_nome = variacao.get('nome', 'N/A')
+            
+            log_message(f"📡 [VARIAÇÃO {idx}/{total_variacoes}] ID: {variacao_id} | Nome: {variacao_nome[:50]}...")
+            
+            try:
+                url_variacao = f"{BLING_API_BASE_URL}/produtos/{variacao_id}"
+                resp_var = requests.get(url_variacao, headers=headers)
+                resp_var.raise_for_status()
+                
+                var_data = resp_var.json().get('data', {})
+                var_midia = var_data.get('midia', {})
+                
+                if isinstance(var_midia, dict):
+                    var_imagens = var_midia.get('imagens', {})
+                    
+                    # Imagens internas da variação
+                    var_internas = var_imagens.get('internas', [])
+                    log_message(f"   📸 Imagens internas: {len(var_internas)}")
+                    for img in var_internas:
+                        if isinstance(img, dict) and 'link' in img:
+                            found_images.append(img['link'])
+                    
+                    # Imagens externas da variação
+                    var_externas = var_imagens.get('externas', [])
+                    log_message(f"   📸 Imagens externas: {len(var_externas)}")
+                    for img in var_externas:
+                        if isinstance(img, dict) and 'link' in img:
+                            found_images.append(img['link'])
+                
+                log_message(f"   ✅ Variação {idx} processada com sucesso")
+                
+            except requests.exceptions.RequestException as e:
+                log_message(f"   ⚠️ [AVISO] Falha ao buscar variação {variacao_id}: {str(e)}")
+                continue
+    else:
+        log_message(f"ℹ️ [INFO] Produto não possui variações")
+    
+    # PASSO 5: Remover duplicatas e retornar
+    unique_urls = sorted(list(set(found_images)))
+    total_unique = len(unique_urls)
+    
+    log_message(f"🎯 [RESULTADO] Total de imagens únicas encontradas: {total_unique}")
+    log_message(f"📦 [EXTRAÇÃO] Finalizando busca para SKU {sku}")
+    
+    if total_unique == 0:
+        log_message(f"⚠️ [AVISO] Nenhuma imagem encontrada para SKU {sku}")
+        return []
+    
+    return [{'link': url} for url in unique_urls]
 
 
 def download_image(url, save_path):
