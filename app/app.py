@@ -182,6 +182,7 @@ def get_product_images(access_token, sku):
 
     # 1. Busca ID pelo SKU
     log_message(f"🔍 Investigando SKU: {sku}...")
+    log_message(f"🔍 [DEBUG] Usando Token: {access_token[:10]}... para investigar SKU: {sku}")
     url_search = f"{BLING_API_BASE_URL}/produtos?codigo={sku}"
     try:
         resp_search = requests.get(url_search, headers=headers)
