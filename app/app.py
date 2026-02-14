@@ -299,8 +299,20 @@ def get_product_images(access_token, sku):
                 
                 log_message(f"   ✅ Variação {idx} processada com sucesso")
                 
+                # Rate limiting: aguardar 0.5s entre requisições para evitar 429
+                if idx < total_variacoes:
+                    import time
+                    time.sleep(0.5)
+                
             except requests.exceptions.RequestException as e:
                 log_message(f"   ⚠️ [AVISO] Falha ao buscar variação {variacao_id}: {str(e)}")
+                
+                # Se for rate limit (429), aguardar mais tempo
+                if '429' in str(e):
+                    import time
+                    log_message(f"   ⏳ [RATE LIMIT] Aguardando 2s antes de continuar...")
+                    time.sleep(2)
+                
                 continue
     else:
         log_message(f"ℹ️ [INFO] Produto não possui variações")
@@ -329,16 +341,71 @@ def download_image(url, save_path):
 
 
 def upload_image_to_bling(access_token, product_id, image_path):
-    '''Faz upload de uma imagem para um produto específico no Bling Destino.'''
+    '''
+    Faz upload de uma imagem para um produto específico no Bling Destino.
+    Usa PATCH com imagem codificada em base64.
+    '''
+    import base64
+    import time
+    
+    log_message(f"📤 [UPLOAD] Preparando upload de {os.path.basename(image_path)} para produto {product_id}")
+    
+    # Ler e codificar imagem em base64
+    with open(image_path, 'rb') as f:
+        image_data = f.read()
+        image_b64 = base64.b64encode(image_data).decode('utf-8')
+    
+    file_size = len(image_data)
+    log_message(f"📊 [UPLOAD] Tamanho do arquivo: {file_size:,} bytes")
+    
+    # Preparar payload
     headers = {
-        "Authorization": f"Bearer {access_token}"
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
     }
-    files = {
-        "file": (os.path.basename(image_path), open(image_path, 'rb'), 'image/jpeg')
+    
+    payload = {
+        "midia": {
+            "imagens": {
+                "internas": [
+                    {
+                        "arquivo": image_b64,
+                        "nome": os.path.basename(image_path)
+                    }
+                ]
+            }
+        }
     }
-    response = requests.post(f"{BLING_API_BASE_URL}/produtos/{product_id}/anexar-imagem", headers=headers, files=files)
-    response.raise_for_status()
-    return response.json()
+    
+    url = f"{BLING_API_BASE_URL}/produtos/{product_id}"
+    log_message(f"📡 [UPLOAD] PATCH {url}")
+    
+    # Fazer requisição com retry
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.patch(url, headers=headers, json=payload)
+            
+            if response.status_code == 429:
+                # Rate limit - aguardar e tentar novamente
+                wait_time = 2 ** attempt  # Backoff exponencial: 2s, 4s, 8s
+                log_message(f"⚠️ [UPLOAD] Rate limit (429). Aguardando {wait_time}s antes de tentar novamente...")
+                time.sleep(wait_time)
+                continue
+            
+            response.raise_for_status()
+            log_message(f"✅ [UPLOAD] Imagem enviada com sucesso! Response: {response.json()}")
+            return response.json()
+            
+        except requests.exceptions.HTTPError as e:
+            if attempt == max_retries:
+                log_message(f"❌ [UPLOAD] Falha após {max_retries} tentativas: {e.response.status_code} - {e.response.text}")
+                raise
+            else:
+                log_message(f"⚠️ [UPLOAD] Tentativa {attempt} falhou. Tentando novamente...")
+                time.sleep(1)
+    
+    raise Exception(f"Upload falhou após {max_retries} tentativas")
 
 
 # --- Lógica de Migração (Mantida a mesma) ---
@@ -363,10 +430,16 @@ def migrate_sku_images(sku, access_token_origin, access_token_dest):
             if image_url:
                 file_name = os.path.basename(image_url).split('?')[0]
                 local_image_path = os.path.join(sku_storage_path, file_name)
-                st.info(f"Baixando imagem {file_name} do SKU {sku}...")
-                download_image(image_url, local_image_path)
-                downloaded_images.append(local_image_path)
-                log_message(f"Imagem {file_name} do SKU {sku} baixada para {local_image_path}")
+                
+                # Verificar se já foi baixada (evitar duplicação)
+                if os.path.exists(local_image_path):
+                    log_message(f"✅ [CACHE] Imagem {file_name} já existe. Pulando download.")
+                    downloaded_images.append(local_image_path)
+                else:
+                    st.info(f"Baixando imagem {file_name} do SKU {sku}...")
+                    download_image(image_url, local_image_path)
+                    downloaded_images.append(local_image_path)
+                    log_message(f"📥 [DOWNLOAD] Imagem {file_name} do SKU {sku} baixada para {local_image_path}")
 
         # 2. Encontrar o ID do produto na conta de destino pelo SKU
         st.info(f"Buscando SKU {sku} na conta de destino...")
