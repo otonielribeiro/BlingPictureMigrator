@@ -173,76 +173,78 @@ def refresh_access_token(client_id, client_secret, refresh_token):
 # --- Funções API Bling (Mantidas as mesmas) ---
 def get_product_images(access_token, sku):
     """
-    Busca imagens no Produto, no Pai (se for variação) ou nos Filhos (se for Pai).
+    Busca imagens DENTRO dos detalhes do produto (campo midia/imagens) em vez de usar o endpoint isolado.
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json"
     }
-
+    
     # 1. Busca ID pelo SKU
-    log_message(f"🔍 Investigando SKU: {sku}...")
-    log_message(f"🔍 [DEBUG] Usando Token: {access_token[:10]}... para investigar SKU: {sku}")
+    log_message(f"🔍 [v3] Investigando SKU: {sku}...")
     url_search = f"{BLING_API_BASE_URL}/produtos?codigo={sku}"
+    
     try:
         resp_search = requests.get(url_search, headers=headers)
-        # A linha resp_search.raise_for_status() foi removida ou comentada porque uma resposta 404 pode ser esperada
-        # para SKUs que não existem e será tratada no if not data_search:
         data_search = resp_search.json().get('data', [])
-
+        
         if not data_search:
             log_message(f"❌ SKU {sku} não existe na conta.")
             return []
+            
         product_id = data_search[0]['id']
-        log_message(f"📍 ID Localizado: {product_id}")
-
-        # Função interna auxiliar para tentar baixar imagens de um ID
-        def try_get_images(target_id, context):
-            #log_message(f"Debug: Tentando obter imagens para ID {target_id} no contexto: {context}") # Debugging
-            url = f"{BLING_API_BASE_URL}/produtos/{target_id}/imagens"
-            resp = requests.get(url, headers=headers)
-            if resp.status_code == 200:
-                imgs = resp.json().get('data', [])
-                if imgs:
-                    log_message(f"📸 Sucesso! {len(imgs)} imagens encontradas no {context} (ID: {target_id}).")
-                    return imgs
-            # else: # Debugging
-            #    log_message(f"Debug: Falha ao obter imagens para ID {target_id} no contexto {context}. Status: {resp.status_code}")
-            return []
-
-        # Tentativa 1: No próprio produto
-        images = try_get_images(product_id, "Produto Original")
-        if images:
-            return images
-
-        # Se falhar, busca detalhes para ver a família
-        log_message(f"🕵️‍♂️ Sem imagens diretas. Analisando família do produto...")
-        resp_det = requests.get(f"{BLING_API_BASE_URL}/produtos/{product_id}", headers=headers)
-        if resp_det.status_code == 200:
-            prod_data = resp_det.json().get('data', {})
-
-            # Tentativa 2: Buscar no PAI (se for variação)
-            parent_id = prod_data.get('variacao', {}).get('produtoPai', {}).get('id')
-            if parent_id:
-                log_message(f"⬆️ Produto é variação. Verificando Pai ID {parent_id}...")
-                images = try_get_images(parent_id, "Produto Pai")
-                if images:
-                    return images
-
-            # Tentativa 3: Buscar nos FILHOS (se for Pai)
-            variations = prod_data.get('variacoes', [])
-            if variations:
-                first_child_id = variations[0]['id'] # Assume-se que as imagens do Pai serão as mesmas da primeira variação
-                log_message(f"⬇️ Produto é Pai. Verificando 1º Filho ID {first_child_id}...")
-                images = try_get_images(first_child_id, "Variação (Filho)")
-                if images:
-                    return images
-
-        log_message(f"❌ Nenhuma imagem encontrada na família inteira do SKU {sku}.")
+        log_message(f"📍 ID Localizado: {product_id}. Baixando ficha completa...")
+        
+        # 2. Busca a FICHA COMPLETA do produto (Onde as fotos realmente moram)
+        url_details = f"{BLING_API_BASE_URL}/produtos/{product_id}"
+        resp_det = requests.get(url_details, headers=headers)
+        resp_det.raise_for_status()
+        
+        product_full_data = resp_det.json().get('data', {})
+        found_images = []
+    # --- ESTRATÉGIA 1: Campo 'midia' (Padrão novo) ---
+    midias = product_full_data.get('midia', [])
+    if midias:
+        log_message(f"📂 Encontrado campo 'midia' com {len(midias)} itens.")
+        for m in midias:
+            if m.get('tipo') == 'FOTO' and m.get('url'):
+                found_images.append(m.get('url'))
+            elif m.get('url'): 
+                found_images.append(m.get('url'))
+    # --- ESTRATÉGIA 2: Campo 'imagens' (Padrão legado) ---
+    if not found_images:
+        imagens_inline = product_full_data.get('imagens', [])
+        if imagens_inline:
+            log_message(f"📂 Encontrado campo 'imagens' interno.")
+            for img in imagens_inline:
+                if isinstance(img, str): found_images.append(img)
+                elif isinstance(img, dict) and img.get('link'): found_images.append(img.get('link'))
+    # --- ESTRATÉGIA 3: Variações (Se for Pai) ---
+    if not found_images and 'variacoes' in product_full_data:
+        variacoes = product_full_data.get('variacoes', [])
+        if variacoes:
+            first_child_id = variacoes[0]['id']
+            log_message(f"⬇️ Pai sem fotos. Buscando no 1º Filho (ID: {first_child_id})...")
+            
+            # Busca recursiva no filho
+            resp_child = requests.get(f"{BLING_API_BASE_URL}/produtos/{first_child_id}", headers=headers)
+            if resp_child.status_code == 200:
+                child_data = resp_child.json().get('data', {})
+                midias_child = child_data.get('midia', [])
+                for m in midias_child:
+                    if m.get('url'): found_images.append(m.get('url'))
+    # --- FINALIZAÇÃO ---
+    if found_images:
+        unique_urls = list(set(found_images))
+        log_message(f"📸 SUCESSO! {len(unique_urls)} URLs extraídas.")
+        return [{'link': url} for url in unique_urls]
+    else:
+        log_message(f"❌ Nenhuma URL encontrada na ficha do produto {product_id}.")
         return []
-    except Exception as e:
-        log_message(f"Erro crítico no SKU {sku}: {str(e)}")
-        return []
+        
+except Exception as e:
+    log_message(f"Erro crítico ao ler ficha do SKU {sku}: {str(e)}")
+    return []
 
 
 def download_image(url, save_path):
