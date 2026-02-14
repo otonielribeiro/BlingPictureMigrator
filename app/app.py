@@ -173,7 +173,7 @@ def refresh_access_token(client_id, client_secret, refresh_token):
 # --- Funções API Bling (Mantidas as mesmas) ---
 def get_product_images(access_token, sku):
     """
-    Obtém imagens do produto. Se não houver no filho, busca no Pai (Variação).
+    Busca imagens no Produto, no Pai (se for variação) ou nos Filhos (se for Pai).
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -181,58 +181,66 @@ def get_product_images(access_token, sku):
     }
 
     # 1. Busca ID pelo SKU
-    log_message(f"🔍 Buscando ID para SKU: {sku}")
+    log_message(f"🔍 Investigando SKU: {sku}...")
     url_search = f"{BLING_API_BASE_URL}/produtos?codigo={sku}"
     try:
         resp_search = requests.get(url_search, headers=headers)
-        resp_search.raise_for_status()
+        # A linha resp_search.raise_for_status() foi removida ou comentada porque uma resposta 404 pode ser esperada
+        # para SKUs que não existem e será tratada no if not data_search:
         data_search = resp_search.json().get('data', [])
 
         if not data_search:
-            log_message(f"❌ SKU {sku} não encontrado.")
+            log_message(f"❌ SKU {sku} não existe na conta.")
             return []
         product_id = data_search[0]['id']
-        log_message(f"✅ ID encontrado: {product_id}")
+        log_message(f"📍 ID Localizado: {product_id}")
 
-        # 2. Tenta buscar imagens do próprio ID
-        url_images = f"{BLING_API_BASE_URL}/produtos/{product_id}/imagens"
-        resp_imgs = requests.get(url_images, headers=headers)
-        images = []
-        if resp_imgs.status_code == 200:
-            images = resp_imgs.json().get('data', [])
-
-        # 3. Lógica de Fallback: Se não tem imagens, checa se tem Pai
-        if not images:
-            log_message(f"⚠️ Sem imagens diretas no ID {product_id}. Verificando Pai...")
-            # Busca detalhes do produto para achar o Pai
-            url_details = f"{BLING_API_BASE_URL}/produtos/{product_id}"
-            resp_det = requests.get(url_details, headers=headers)
-            if resp_det.status_code == 200:
-                prod_data = resp_det.json().get('data', {})
-                # Estrutura do Bling v3 para variação
-                variacao = prod_data.get('variacao', {})
-                parent_id = variacao.get('produtoPai', {}).get('id')
-                
-                if parent_id:
-                    log_message(f"👪 SKU é variação do Pai {parent_id}. Buscando imagens do Pai...")
-                    url_pai_imgs = f"{BLING_API_BASE_URL}/produtos/{parent_id}/imagens"
-                    resp_pai = requests.get(url_pai_imgs, headers=headers)
-                    if resp_pai.status_code == 200:
-                        images = resp_pai.json().get('data', [])
-                        log_message(f"📸 Sucesso! {len(images)} imagens recuperadas do Pai.")
-                    else:
-                        log_message(f"❌ Pai {parent_id} também não tem imagens.")
-                else:
-                    log_message("ℹ️ Produto não é variação (não tem pai). Sem imagens mesmo.")
-        
-        if images:
-            log_message(f"📸 Total de imagens para migrar: {len(images)}")
-            return images
-        else:
-            log_message(f"❌ Nenhuma imagem encontrada para SKU {sku} (nem no Pai).")
+        # Função interna auxiliar para tentar baixar imagens de um ID
+        def try_get_images(target_id, context):
+            #log_message(f"Debug: Tentando obter imagens para ID {target_id} no contexto: {context}") # Debugging
+            url = f"{BLING_API_BASE_URL}/produtos/{target_id}/imagens"
+            resp = requests.get(url, headers=headers)
+            if resp.status_code == 200:
+                imgs = resp.json().get('data', [])
+                if imgs:
+                    log_message(f"📸 Sucesso! {len(imgs)} imagens encontradas no {context} (ID: {target_id}).")
+                    return imgs
+            # else: # Debugging
+            #    log_message(f"Debug: Falha ao obter imagens para ID {target_id} no contexto {context}. Status: {resp.status_code}")
             return []
+
+        # Tentativa 1: No próprio produto
+        images = try_get_images(product_id, "Produto Original")
+        if images:
+            return images
+
+        # Se falhar, busca detalhes para ver a família
+        log_message(f"🕵️‍♂️ Sem imagens diretas. Analisando família do produto...")
+        resp_det = requests.get(f"{BLING_API_BASE_URL}/produtos/{product_id}", headers=headers)
+        if resp_det.status_code == 200:
+            prod_data = resp_det.json().get('data', {})
+
+            # Tentativa 2: Buscar no PAI (se for variação)
+            parent_id = prod_data.get('variacao', {}).get('produtoPai', {}).get('id')
+            if parent_id:
+                log_message(f"⬆️ Produto é variação. Verificando Pai ID {parent_id}...")
+                images = try_get_images(parent_id, "Produto Pai")
+                if images:
+                    return images
+
+            # Tentativa 3: Buscar nos FILHOS (se for Pai)
+            variations = prod_data.get('variacoes', [])
+            if variations:
+                first_child_id = variations[0]['id'] # Assume-se que as imagens do Pai serão as mesmas da primeira variação
+                log_message(f"⬇️ Produto é Pai. Verificando 1º Filho ID {first_child_id}...")
+                images = try_get_images(first_child_id, "Variação (Filho)")
+                if images:
+                    return images
+
+        log_message(f"❌ Nenhuma imagem encontrada na família inteira do SKU {sku}.")
+        return []
     except Exception as e:
-        log_message(f"Erro ao processar SKU {sku}: {str(e)}")
+        log_message(f"Erro crítico no SKU {sku}: {str(e)}")
         return []
 
 
