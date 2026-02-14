@@ -172,22 +172,48 @@ def refresh_access_token(client_id, client_secret, refresh_token):
 
 # --- Funções API Bling (Mantidas as mesmas) ---
 def get_product_images(access_token, sku):
-    '''Obtém as imagens de um produto Bling pelo SKU.'''
+    """
+    Obtém as imagens de um produto Bling buscando primeiro o ID pelo SKU.
+    """
     headers = {
-        "Authorization": f"Bearer {access_token}"
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
     }
-    response_product = requests.get(f"{BLING_API_BASE_URL}/produtos?filters=sku['{sku}']", headers=headers)
-    response_product.raise_for_status()
-    products_data = response_product.json().get('data')
 
-    if not products_data:
-        log_message(f"SKU {sku} não encontrado na conta de origem.")
+    # 1. Busca o ID do produto usando o SKU (parametro 'codigo')
+    log_message(f"🔍 Iniciando busca dinâmica para SKU: {sku}")
+    url_search = f"{BLING_API_BASE_URL}/produtos?codigo={sku}"
+
+    try:
+        # Busca o ID
+        resp_search = requests.get(url_search, headers=headers)
+        resp_search.raise_for_status()
+        data_search = resp_search.json().get('data', [])
+
+        if not data_search:
+            log_message(f"❌ SKU {sku} não encontrado na conta de origem.")
+            return []
+
+        # Pega o ID do primeiro resultado
+        product_id = data_search[0]['id']
+        log_message(f"✅ SKU {sku} corresponde ao ID: {product_id}")
+
+        # 2. Busca as imagens usando o ID descoberto
+        url_images = f"{BLING_API_BASE_URL}/produtos/{product_id}/imagens"
+        resp_imgs = requests.get(url_images, headers=headers)
+
+        if resp_imgs.status_code == 404:
+            log_message(f"⚠️ Produto ID {product_id} existe, mas não tem imagens cadastradas.")
+            return []
+
+        resp_imgs.raise_for_status()
+        images = resp_imgs.json().get('data', [])
+        log_message(f"📸 Encontradas {len(images)} imagens para o SKU {sku}.")
+        return images
+
+    except Exception as e:
+        log_message(f"Erro ao processar SKU {sku}: {str(e)}")
         return []
-
-    product_id = products_data[0]['id']
-    response_images = requests.get(f"{BLING_API_BASE_URL}/produtos/{product_id}/imagens", headers=headers)
-    response_images.raise_for_status()
-    return response_images.json().get('data', [])
 
 
 def download_image(url, save_path):
