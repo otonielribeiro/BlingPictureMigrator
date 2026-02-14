@@ -521,6 +521,16 @@ elif is_lojahi_connected and is_select_connected:
     st.success("✅ Destino (SELECT) Conectado com Sucesso!")
     st.markdown("Ambas as contas Bling estão autenticadas. Agora você pode migrar as imagens.")
     
+    # --- DEBUG: Botão para exibir tokens (TEMPORÁRIO) ---
+    with st.expander("🔧 Debug: Ver Tokens e IDs"):
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Mostrar Token LOJAHI"):
+                st.code(tokens_to_use_lojahi, language="json")
+        with col2:
+            if st.button("Mostrar Token SELECT"):
+                st.code(tokens_to_use_select, language="json")
+    
     skus_input = st.text_area("Insira os SKUs dos produtos (um por linha, sem espaços extras):", height=200)
     if st.button("Iniciar Migração"):
         if skus_input:
