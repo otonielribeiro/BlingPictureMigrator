@@ -202,49 +202,53 @@ def get_product_images(access_token, sku):
         
         product_full_data = resp_det.json().get('data', {})
         found_images = []
-    # --- ESTRATÉGIA 1: Campo 'midia' (Padrão novo) ---
-    midias = product_full_data.get('midia', [])
-    if midias:
-        log_message(f"📂 Encontrado campo 'midia' com {len(midias)} itens.")
-        for m in midias:
-            if m.get('tipo') == 'FOTO' and m.get('url'):
-                found_images.append(m.get('url'))
-            elif m.get('url'): 
-                found_images.append(m.get('url'))
-    # --- ESTRATÉGIA 2: Campo 'imagens' (Padrão legado) ---
-    if not found_images:
-        imagens_inline = product_full_data.get('imagens', [])
-        if imagens_inline:
-            log_message(f"📂 Encontrado campo 'imagens' interno.")
-            for img in imagens_inline:
-                if isinstance(img, str): found_images.append(img)
-                elif isinstance(img, dict) and img.get('link'): found_images.append(img.get('link'))
-    # --- ESTRATÉGIA 3: Variações (Se for Pai) ---
-    if not found_images and 'variacoes' in product_full_data:
-        variacoes = product_full_data.get('variacoes', [])
-        if variacoes:
-            first_child_id = variacoes[0]['id']
-            log_message(f"⬇️ Pai sem fotos. Buscando no 1º Filho (ID: {first_child_id})...")
+
+        # --- ESTRATÉGIA 1: Campo 'midia' (Padrão novo) ---
+        midias = product_full_data.get('midia', [])
+        if midias:
+            log_message(f"📂 Encontrado campo 'midia' com {len(midias)} itens.")
+            for m in midias:
+                if m.get('tipo') == 'FOTO' and m.get('url'):
+                    found_images.append(m.get('url'))
+                elif m.get('url'): 
+                    found_images.append(m.get('url'))
+
+        # --- ESTRATÉGIA 2: Campo 'imagens' (Padrão legado) ---
+        if not found_images:
+            imagens_inline = product_full_data.get('imagens', [])
+            if imagens_inline:
+                log_message(f"📂 Encontrado campo 'imagens' interno.")
+                for img in imagens_inline:
+                    if isinstance(img, str): found_images.append(img)
+                    elif isinstance(img, dict) and img.get('link'): found_images.append(img.get('link'))
+
+        # --- ESTRATÉGIA 3: Variações (Se for Pai) ---
+        if not found_images and 'variacoes' in product_full_data:
+            variacoes = product_full_data.get('variacoes', [])
+            if variacoes:
+                first_child_id = variacoes[0]['id']
+                log_message(f"⬇️ Pai sem fotos. Buscando no 1º Filho (ID: {first_child_id})...")
+                
+                # Busca recursiva no filho
+                resp_child = requests.get(f"{BLING_API_BASE_URL}/produtos/{first_child_id}", headers=headers)
+                if resp_child.status_code == 200:
+                    child_data = resp_child.json().get('data', {})
+                    midias_child = child_data.get('midia', [])
+                    for m in midias_child:
+                        if m.get('url'): found_images.append(m.get('url'))
+
+        # --- FINALIZAÇÃO ---
+        if found_images:
+            unique_urls = list(set(found_images))
+            log_message(f"📸 SUCESSO! {len(unique_urls)} URLs extraídas.")
+            return [{'link': url} for url in unique_urls]
+        else:
+            log_message(f"❌ Nenhuma URL encontrada na ficha do produto {product_id}.")
+            return []
             
-            # Busca recursiva no filho
-            resp_child = requests.get(f"{BLING_API_BASE_URL}/produtos/{first_child_id}", headers=headers)
-            if resp_child.status_code == 200:
-                child_data = resp_child.json().get('data', {})
-                midias_child = child_data.get('midia', [])
-                for m in midias_child:
-                    if m.get('url'): found_images.append(m.get('url'))
-    # --- FINALIZAÇÃO ---
-    if found_images:
-        unique_urls = list(set(found_images))
-        log_message(f"📸 SUCESSO! {len(unique_urls)} URLs extraídas.")
-        return [{'link': url} for url in unique_urls]
-    else:
-        log_message(f"❌ Nenhuma URL encontrada na ficha do produto {product_id}.")
+    except Exception as e:
+        log_message(f"Erro crítico ao ler ficha do SKU {sku}: {str(e)}")
         return []
-        
-except Exception as e:
-    log_message(f"Erro crítico ao ler ficha do SKU {sku}: {str(e)}")
-    return []
 
 
 def download_image(url, save_path):
