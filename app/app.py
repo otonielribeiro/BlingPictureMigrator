@@ -173,14 +173,13 @@ def refresh_access_token(client_id, client_secret, refresh_token):
 # --- Funções API Bling (Mantidas as mesmas) ---
 def get_product_images(access_token, sku):
     """
-    Busca imagens DENTRO dos detalhes do produto (campo midia/imagens) em vez de usar o endpoint isolado.
+    Busca imagens na ficha do produto, aceitando tanto objetos quanto strings (URLs diretas).
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json"
     }
     
-    # 1. Busca ID pelo SKU
     log_message(f"🔍 [v3] Investigando SKU: {sku}...")
     url_search = f"{BLING_API_BASE_URL}/produtos?codigo={sku}"
     
@@ -195,60 +194,64 @@ def get_product_images(access_token, sku):
         product_id = data_search[0]['id']
         log_message(f"📍 ID Localizado: {product_id}. Baixando ficha completa...")
         
-        # 2. Busca a FICHA COMPLETA do produto (Onde as fotos realmente moram)
         url_details = f"{BLING_API_BASE_URL}/produtos/{product_id}"
         resp_det = requests.get(url_details, headers=headers)
         resp_det.raise_for_status()
         
         product_full_data = resp_det.json().get('data', {})
         found_images = []
-
-        # --- ESTRATÉGIA 1: Campo 'midia' (Padrão novo) ---
-        midias = product_full_data.get('midia', [])
-        if midias:
-            log_message(f"📂 Encontrado campo 'midia' com {len(midias)} itens.")
-            for m in midias:
-                if m.get('tipo') == 'FOTO' and m.get('url'):
-                    found_images.append(m.get('url'))
-                elif m.get('url'): 
-                    found_images.append(m.get('url'))
-
-        # --- ESTRATÉGIA 2: Campo 'imagens' (Padrão legado) ---
-        if not found_images:
-            imagens_inline = product_full_data.get('imagens', [])
-            if imagens_inline:
-                log_message(f"📂 Encontrado campo 'imagens' interno.")
-                for img in imagens_inline:
-                    if isinstance(img, str): found_images.append(img)
-                    elif isinstance(img, dict) and img.get('link'): found_images.append(img.get('link'))
-
-        # --- ESTRATÉGIA 3: Variações (Se for Pai) ---
-        if not found_images and 'variacoes' in product_full_data:
-            variacoes = product_full_data.get('variacoes', [])
-            if variacoes:
-                first_child_id = variacoes[0]['id']
-                log_message(f"⬇️ Pai sem fotos. Buscando no 1º Filho (ID: {first_child_id})...")
-                
-                # Busca recursiva no filho
-                resp_child = requests.get(f"{BLING_API_BASE_URL}/produtos/{first_child_id}", headers=headers)
-                if resp_child.status_code == 200:
-                    child_data = resp_child.json().get('data', {})
-                    midias_child = child_data.get('midia', [])
-                    for m in midias_child:
-                        if m.get('url'): found_images.append(m.get('url'))
-
-        # --- FINALIZAÇÃO ---
-        if found_images:
-            unique_urls = list(set(found_images))
-            log_message(f"📸 SUCESSO! {len(unique_urls)} URLs extraídas.")
-            return [{'link': url} for url in unique_urls]
-        else:
-            log_message(f"❌ Nenhuma URL encontrada na ficha do produto {product_id}.")
-            return []
+    # --- ESTRATÉGIA 1: Campo 'midia' (Híbrido) ---
+    midias = product_full_data.get('midia', [])
+    if midias:
+        log_message(f"📂 Encontrado campo 'midia' com {len(midias)} itens.")
+        for m in midias:
+            # CASO A: É apenas uma string (URL direta)
+            if isinstance(m, str):
+                found_images.append(m)
+            # CASO B: É um dicionário/objeto
+            elif isinstance(m, dict):
+                url = m.get('url') or m.get('link') or m.get('url_miniatura')
+                if url: found_images.append(url)
+    # --- ESTRATÉGIA 2: Campo 'imagens' (Híbrido) ---
+    if not found_images:
+        imagens_inline = product_full_data.get('imagens', [])
+        if imagens_inline:
+            log_message(f"📂 Encontrado campo 'imagens' interno.")
+            for img in imagens_inline:
+                if isinstance(img, str): 
+                    found_images.append(img)
+                elif isinstance(img, dict):
+                    url = img.get('link') or img.get('url')
+                    if url: found_images.append(url)
+    # --- ESTRATÉGIA 3: Variações (Recursivo) ---
+    if not found_images and 'variacoes' in product_full_data:
+        variacoes = product_full_data.get('variacoes', [])
+        if variacoes:
+            first_child_id = variacoes[0]['id']
+            log_message(f"⬇️ Pai sem fotos. Buscando no 1º Filho (ID: {first_child_id})...")
             
-    except Exception as e:
-        log_message(f"Erro crítico ao ler ficha do SKU {sku}: {str(e)}")
+            resp_child = requests.get(f"{BLING_API_BASE_URL}/produtos/{first_child_id}", headers=headers)
+            if resp_child.status_code == 200:
+                child_data = resp_child.json().get('data', {})
+                # Tenta pegar midia do filho (reusando logica híbrida se possivel, aqui simplificado)
+                midias_child = child_data.get('midia', [])
+                for m in midias_child:
+                    if isinstance(m, str): found_images.append(m)
+                    elif isinstance(m, dict) and m.get('url'): found_images.append(m.get('url'))
+    # --- FINALIZAÇÃO ---
+    if found_images:
+        # Limpa e Remove Duplicatas
+        unique_urls = sorted(list(set(found_images)))
+        log_message(f"📸 SUCESSO! {len(unique_urls)} URLs extraídas.")
+        # Retorna formato padrão
+        return [{'link': url} for url in unique_urls]
+    else:
+        log_message(f"❌ Nenhuma URL encontrada na ficha do produto {product_id}.")
         return []
+        
+except Exception as e:
+    log_message(f"Erro crítico ao ler ficha do SKU {sku}: {str(e)}")
+    return []
 
 
 def download_image(url, save_path):
