@@ -340,25 +340,44 @@ def download_image(url, save_path):
             f.write(chunk)
 
 
-def upload_image_to_bling(access_token, product_id, image_path):
+def upload_all_images_to_bling(access_token, product_id, image_paths):
     '''
-    Faz upload de uma imagem para um produto específico no Bling Destino.
-    Usa PATCH com imagem codificada em base64.
+    Faz upload de TODAS as imagens de uma vez para um produto específico no Bling Destino.
+    Usa PATCH com imagens codificadas em base64.
+    
+    IMPORTANTE: Envia todas as imagens em um único PATCH para evitar sobrescrita.
     '''
     import base64
     import time
     
-    log_message(f"📤 [UPLOAD] Preparando upload de {os.path.basename(image_path)} para produto {product_id}")
+    total_images = len(image_paths)
+    log_message(f"📦 [UPLOAD LOTE] Preparando upload de {total_images} imagens para produto {product_id}")
     
-    # Ler e codificar imagem em base64
-    with open(image_path, 'rb') as f:
-        image_data = f.read()
-        image_b64 = base64.b64encode(image_data).decode('utf-8')
+    # Codificar todas as imagens em base64
+    internas = []
+    total_size = 0
     
-    file_size = len(image_data)
-    log_message(f"📊 [UPLOAD] Tamanho do arquivo: {file_size:,} bytes")
+    for idx, image_path in enumerate(image_paths, 1):
+        log_message(f"   💾 [{idx}/{total_images}] Codificando {os.path.basename(image_path)}...")
+        
+        with open(image_path, 'rb') as f:
+            image_data = f.read()
+            image_b64 = base64.b64encode(image_data).decode('utf-8')
+        
+        file_size = len(image_data)
+        total_size += file_size
+        
+        internas.append({
+            "arquivo": image_b64,
+            "nome": os.path.basename(image_path)
+        })
+        
+        log_message(f"   ✅ [{idx}/{total_images}] {os.path.basename(image_path)} codificada ({file_size:,} bytes)")
     
-    # Preparar payload
+    log_message(f"📊 [UPLOAD LOTE] Tamanho total: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
+    log_message(f"📊 [UPLOAD LOTE] Payload JSON: ~{len(str(internas))/1024/1024:.2f} MB")
+    
+    # Preparar payload com TODAS as imagens
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
@@ -367,45 +386,46 @@ def upload_image_to_bling(access_token, product_id, image_path):
     payload = {
         "midia": {
             "imagens": {
-                "internas": [
-                    {
-                        "arquivo": image_b64,
-                        "nome": os.path.basename(image_path)
-                    }
-                ]
+                "internas": internas  # Array com TODAS as imagens
             }
         }
     }
     
     url = f"{BLING_API_BASE_URL}/produtos/{product_id}"
-    log_message(f"📡 [UPLOAD] PATCH {url}")
+    log_message(f"📡 [UPLOAD LOTE] PATCH {url} com {total_images} imagens")
     
     # Fazer requisição com retry
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.patch(url, headers=headers, json=payload)
+            log_message(f"🔄 [UPLOAD LOTE] Tentativa {attempt}/{max_retries}...")
+            response = requests.patch(url, headers=headers, json=payload, timeout=60)
             
             if response.status_code == 429:
                 # Rate limit - aguardar e tentar novamente
                 wait_time = 2 ** attempt  # Backoff exponencial: 2s, 4s, 8s
-                log_message(f"⚠️ [UPLOAD] Rate limit (429). Aguardando {wait_time}s antes de tentar novamente...")
+                log_message(f"⚠️ [UPLOAD LOTE] Rate limit (429). Aguardando {wait_time}s antes de tentar novamente...")
                 time.sleep(wait_time)
                 continue
             
             response.raise_for_status()
-            log_message(f"✅ [UPLOAD] Imagem enviada com sucesso! Response: {response.json()}")
+            log_message(f"✅ [UPLOAD LOTE] {total_images} imagens enviadas com sucesso! Response: {response.json()}")
             return response.json()
             
         except requests.exceptions.HTTPError as e:
             if attempt == max_retries:
-                log_message(f"❌ [UPLOAD] Falha após {max_retries} tentativas: {e.response.status_code} - {e.response.text}")
+                log_message(f"❌ [UPLOAD LOTE] Falha após {max_retries} tentativas: {e.response.status_code} - {e.response.text}")
                 raise
             else:
-                log_message(f"⚠️ [UPLOAD] Tentativa {attempt} falhou. Tentando novamente...")
-                time.sleep(1)
+                log_message(f"⚠️ [UPLOAD LOTE] Tentativa {attempt} falhou: {str(e)}. Tentando novamente...")
+                time.sleep(2)
+        except Exception as e:
+            log_message(f"❌ [UPLOAD LOTE] Erro inesperado na tentativa {attempt}: {str(e)}")
+            if attempt == max_retries:
+                raise
+            time.sleep(2)
     
-    raise Exception(f"Upload falhou após {max_retries} tentativas")
+    raise Exception(f"Upload em lote falhou após {max_retries} tentativas")
 
 
 # --- Lógica de Migração (Mantida a mesma) ---
@@ -456,12 +476,10 @@ def migrate_sku_images(sku, access_token_origin, access_token_dest):
 
         product_id_dest = products_data_dest[0]['id']
 
-        # 3. Fazer upload das imagens para a conta de destino
-        st.info(f"Fazendo upload de imagens para SKU {sku} no Bling Destino (Produto ID: {product_id_dest})...")
-        for image_path in downloaded_images:
-            st.info(f"Subindo imagem {os.path.basename(image_path)} do SKU {sku}...")
-            upload_image_to_bling(access_token_dest, product_id_dest, image_path)
-            log_message(f"Imagem {os.path.basename(image_path)} do SKU {sku} enviada com sucesso para o destino.")
+        # 3. Fazer upload de TODAS as imagens de uma vez para a conta de destino
+        st.info(f"Fazendo upload de {len(downloaded_images)} imagens para SKU {sku} no Bling Destino (Produto ID: {product_id_dest})...")
+        upload_all_images_to_bling(access_token_dest, product_id_dest, downloaded_images)
+        log_message(f"Todas as {len(downloaded_images)} imagens do SKU {sku} enviadas com sucesso para o destino.")
 
         st.success(f"Migração do SKU {sku} concluída com sucesso!")
         log_message(f"Migração do SKU {sku} concluída com sucesso!")
